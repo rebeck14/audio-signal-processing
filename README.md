@@ -1,7 +1,9 @@
 # AudioSignalProcessing
 =====================
 
-This is the repository for MTEC-360/660-01: Audio Signal Processing at CalArts MTIID, and holds all the starter code for the chuck assignments. This course is based off of Will Pirkle's excellent book "Designing Audio Effect Plug-Ins in C++."
+This is the repository for MTEC-360/660-01: Audio Signal Processing at CalArts MTIID, and holds all the starter code for the chuck assignments. 
+
+This course is based off of Will Pirkle's excellent book "Designing Audio Effect Plug-Ins in C++."
 
 * Week 1:  Brew, Git, and Vim
 * Week 2:  FIR and IIR Filters 
