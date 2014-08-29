@@ -1,7 +1,13 @@
-# Resources
+# VIM Resources
 Vim tutor - $vimtutor
 Vimtips wiki - http://vim.wikia.com/wiki/Vim_Tips_Wiki
 vim game - http://vim-adventures.com/
 
 Cheatsheet - http://michael.peopleofhonoronly.com/vim/
 Help I'm stuck!!! -- Google.com
+
+# running the current chuck file you are editing
+:! chuck % 
+
+#GIT resources
+Bitbucket - 
