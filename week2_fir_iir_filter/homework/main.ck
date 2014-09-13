@@ -1,4 +1,4 @@
-// test.ck, Audio Signal Processing
+// main.ck, Audio Signal Processing
 // Week 2 Homework
 
 // you should not have to change any of this code!

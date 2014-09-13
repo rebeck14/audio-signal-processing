@@ -7,7 +7,7 @@
 public class Fir extends Chugen {
     // FIR Filter Class
 
-    // required to keep a history of our last sample 
+    // you'll have to use the following three variables in your function
     0.0 => float x1;
 
     // filter coefficients
@@ -15,18 +15,19 @@ public class Fir extends Chugen {
     1.0 => float a1;
 
     // function for setting filter cutoff
-    // called from our test code
+    // called from main.ck
     fun void filt(float x) {
         x => a0;    
         1.0 - a0 => a1;
     }
 
     // function that updates every sample
-    // wite your code inside of this function!
+    // write your code inside of this function!
     fun float tick(float x) {
 
 
-
+      
+        x => float out;
         return out;
     }
 }

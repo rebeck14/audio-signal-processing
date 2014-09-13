@@ -6,7 +6,7 @@
 // run this file to test
 
 // adds our Fir filter, must be loaded before test code
-me.dir() + "/fir.ck" => string fir;
+me.dir() + "/Fir.ck" => string fir;
 Machine.add(fir);
 
 // runs our test code
