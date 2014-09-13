@@ -1,5 +1,5 @@
 # AudioSignalProcessing
-=====================
+=======================
 
 This is the repository for MTEC-360/660-01: Audio Signal Processing at CalArts MTIID, and holds all the starter code for the chuck assignments. 
 
@@ -20,4 +20,29 @@ This course is based off of Will Pirkle's excellent book "Designing Audio Effect
 * Week 13: Final Projects
 * Week 14: Final Projects
 
+chuck.vim
+---------
 
+Your TA (Eric) recommends using the [chuck.vim](https://github.com/wilsaj/chuck.vim) plugin.
+
+For a [vundle](https://github.com/gmarik/vundle) installation, install by adding the repo to your list of plugins in your .vimrc
+
+    " vundle up
+    filetype off
+    set rtp+=~/.vim/bundle/Vundle.vim
+    call vundle#begin()
+
+    " let vundle manage itself
+    Plugin 'gmarik/Vundle.vim'
+    Plugin 'wilsaj/chuck.vim'
+
+    call vundle#end()
+    filetype plugin indent on
+
+Then install using vundle inside vim.
+
+    :BundleInstall
+
+With the plugin installed, you can use `\r` to run ChucK files inside of vim!
+
+Eric's TA hours are from 6:00-8:00 on Wednesdays, and can help you get this setup.
