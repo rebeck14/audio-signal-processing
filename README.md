@@ -25,7 +25,13 @@ chuck.vim
 
 Your TA (Eric) recommends using the [chuck.vim](https://github.com/wilsaj/chuck.vim) plugin.
 
-For a [vundle](https://github.com/gmarik/vundle) installation, install by adding the repo to your list of plugins in your .vimrc
+I've outlined directions for a [vundle](https://github.com/gmarik/vundle) install, you could also install chuck.vim with Pathogen if so desired.
+
+To install vundle via terminal.
+
+    $ git clone https://github.com/gmarik/Vundle.vim.git ~/.vim/bundle/Vundle.vim
+
+Then add the following repos to your ~.vimrc
 
     " vundle up
     filetype off
