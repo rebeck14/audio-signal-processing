@@ -44,6 +44,7 @@ Then add the following repos to your ~.vimrc
 
     call vundle#end()
     filetype plugin indent on
+    syntax on
 
 Then install using vundle inside vim.
 
