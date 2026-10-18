@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ink on Water</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: one still bath in the middle of the page, a quiet row of tools under it.
+     Big water, small controls. The ink does the talking. */
+  :root {
+    --paper: #efe9df;
+    --ink: #1c1915;
+    --muted: #6b6257;
+    --line: #d6cdbf;
+    --water: #c8d4dc;
+    --accent: #b3242b;
+    --chip-ring: #1c1915;
+    --disp: "Fraunces", Georgia, "Times New Roman", serif;
+    --body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+    --mono: "IBM Plex Mono", Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #141210; --ink: #ece6da; --muted: #9c9283; --line: #2f2a24;
+      --water: #c8d4dc; --accent: #d9494f; --chip-ring: #ece6da; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #141210; --ink: #ece6da; --muted: #9c9283; --line: #2f2a24;
+    --water: #c8d4dc; --accent: #d9494f; --chip-ring: #ece6da; color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 14px/1.45 var(--body); -webkit-font-smoothing: antialiased;
+    overflow: hidden; touch-action: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  .app {
+    height: 100%; display: flex; flex-direction: column; gap: 10px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 12px 10px;
+  }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  header h1 { margin: 0; font: 600 22px/1.1 var(--disp); letter-spacing: -0.01em; }
+  header h1 span { font-weight: 400; color: var(--muted); margin-left: 10px; font-size: 16px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+
+  .stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+  .bath {
+    position: relative; width: min(100%, calc(100vh - 230px)); aspect-ratio: 1; max-width: 100%;
+    border-radius: 14px; overflow: hidden; background: var(--water);
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,.12), inset 0 10px 28px rgba(0,0,0,.18), inset 0 -4px 12px rgba(255,255,255,.18);
+    cursor: crosshair; touch-action: none;
+  }
+  .bath canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .bath .ring { pointer-events: none; }
+
+  .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; justify-content: center; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { font: 500 13px var(--body); color: var(--ink); background: transparent; border: 0; padding: 7px 12px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+  .seg button kbd, .btn kbd { font: 400 10.5px var(--mono); opacity: .55; margin-left: 5px; }
+  .seg button[aria-pressed="true"] kbd { opacity: .7; }
+
+  .inks { display: flex; gap: 8px; align-items: center; }
+  .chip { width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(0,0,0,.18); }
+  .chip[aria-pressed="true"] { border-color: var(--chip-ring); }
+  .chip:focus-visible, .seg button:focus-visible, .btn:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .sliders { display: flex; gap: 14px; flex-wrap: wrap; }
+  .sl { display: flex; flex-direction: column; gap: 2px; min-width: 110px; }
+  .sl label { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--muted); letter-spacing: .02em; }
+  .sl label b { font: 500 11px var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
+  .sl input { width: 100%; accent-color: var(--accent); margin: 0; }
+
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn { font: 500 13px var(--body); color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+  .btn:hover { border-color: var(--ink); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn:disabled { opacity: .4; cursor: default; }
+
+  footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+  footer p { margin: 0; max-width: 72ch; }
+  footer .status { font: 400 11.5px var(--mono); min-height: 16px; }
+  @media (max-width: 560px) {
+    header h1 span { display: none; }
+    .bath { width: min(100%, calc(100vh - 300px)); }
+    footer p.about { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header>
+    <h1>Ink on Water <span>墨流し</span></h1>
+    <p>Tap to drop. Drag to stir. Return for fresh water.</p>
+  </header>
+
+  <div class="stage">
+    <div class="bath" id="bath">
+      <canvas id="view" aria-label="A square bath of water. Tap to drop ink, drag to stir it."></canvas>
+      <canvas id="ringc" class="ring" aria-hidden="true"></canvas>
+    </div>
+  </div>
+
+  <div class="tools">
+    <div class="seg" role="group" aria-label="Tool" id="toolSeg">
+      <button type="button" data-tool="drop" aria-pressed="false">Drop<kbd>D</kbd></button>
+      <button type="button" data-tool="stir" aria-pressed="true">Stir<kbd>S</kbd></button>
+      <button type="button" data-tool="rake" aria-pressed="false">Rake<kbd>R</kbd></button>
+    </div>
+    <div class="inks" id="inks" role="group" aria-label="Ink"></div>
+    <div class="sliders">
+      <div class="sl"><label for="size">Drop size <b id="sizeV">1.0x</b></label><input id="size" type="range" min="0.3" max="3" step="0.1" value="1"></div>
+      <div class="sl"><label for="tip">Tip <b id="tipV">1.0x</b></label><input id="tip" type="range" min="0.3" max="3" step="0.1" value="1"></div>
+      <div class="sl"><label for="force">Stir force <b id="forceV">60%</b></label><input id="force" type="range" min="0" max="1" step="0.01" value="0.6"></div>
+      <div class="sl"><label for="swirl">Swirl <b id="swirlV">70%</b></label><input id="swirl" type="range" min="0" max="1" step="0.01" value="0.7"></div>
+    </div>
+    <div class="actions">
+      <button class="btn" type="button" id="rings">Rings<kbd>T</kbd></button>
+      <button class="btn" type="button" id="undo">Undo<kbd>Z</kbd></button>
+      <button class="btn" type="button" id="fresh">Fresh water<kbd>⏎</kbd></button>
+      <button class="btn primary" type="button" id="png">Pull print<kbd>E</kbd></button>
+      <button class="btn" type="button" id="svg">SVG<kbd>V</kbd></button>
+    </div>
+  </div>
+
+  <footer>
+    <p class="about">Closed-form marbling after Jaffer: every drop pushes the boundaries already on the water outward by <span style="font-family:var(--mono)">√(1 + r²/d²)</span>, a rake bends them with a tine line, and the stick drags a Gaussian core with a counter-rotating wake. The picture is vectors the whole time, so the SVG is exact.</p>
+    <p class="status" id="status"></p>
+  </footer>
+</div>
+
+<script>
+'use strict';
+/* ---------- inks: few, named ---------- */
+const INKS = [
+  ['Sumi',     '#161514'],
+  ['Washi',    '#f4efe4'],
+  ['Cinnabar', '#b3242b'],
+  ['Bubble',   '#f0d84a'],
+  ['Windfish', '#3a7dc9'],
+];
+const $ = id => document.getElementById(id);
+const bath = $('bath'), view = $('view'), ringc = $('ringc');
+const ctx = view.getContext('2d');
+const rctx = ringc.getContext('2d');
+
+/* ---------- state ---------- */
+// A drop is a closed polygon in bath units [0,1]^2, plus its ink index. Later drops sit on top.
+let drops = [];          // [{ink, pts: Float64Array(2n)}]
+let tool = 'stir';
+let inkIdx = 0;
+let dropSize = 1, tipMult = 1, force = 0.6, swirl = 0.7;
+const undoStack = [];
+const DROP_R = 0.042;    // base drop radius (bath units)
+const TIP_R  = 0.028;    // base stick sigma
+let dirty = true;
+
+function water() { return getComputedStyle(document.documentElement).getPropertyValue('--water').trim() || '#c8d4dc'; }
+
+/* ---------- the marbling math ---------- */
+// Jaffer, "Mathematical Marbling" (2011): a drop of radius r at C moves every point P on the water to
+// C + (P - C) * sqrt(1 + r^2 / |P - C|^2). Area is conserved and boundaries never cross.
+function addDrop(cx, cy, r, ink) {
+  const r2 = r * r;
+  for (const d of drops) {
+    const p = d.pts;
+    for (let i = 0; i < p.length; i += 2) {
+      const dx = p[i] - cx, dy = p[i + 1] - cy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 1e-12) continue;
+      const s = Math.sqrt(1 + r2 / d2);
+      p[i] = cx + dx * s; p[i + 1] = cy + dy * s;
+    }
+  }
+  const n = 96, pts = new Float64Array(n * 2);
+  for (let k = 0; k < n; k++) {
+    const a = (k / n) * Math.PI * 2;
+    pts[2 * k] = cx + r * Math.cos(a); pts[2 * k + 1] = cy + r * Math.sin(a);
+  }
+  drops.push({ ink, pts });
+  if (drops.length > 400) drops.shift();
+  dirty = true;
+}
+
+// Stick: a short segment A->B with sigma = tip radius. Points inside the core move with the stick;
+// points beside it roll in the wake, clockwise on one side and counter-clockwise on the other.
+function stir(ax, ay, bx, by, sigma, z, sw) {
+  let mx = bx - ax, my = by - ay;
+  const L = Math.hypot(mx, my);
+  if (L < 1e-6) return;
+  mx /= L; my /= L;
+  const cutoff = (3.2 * sigma) ** 2, inv = 1 / (2 * sigma * sigma);
+  const theta0 = sw * Math.min(L / sigma, 1.0) * 0.9;
+  for (const d of drops) {
+    const p = d.pts;
+    for (let i = 0; i < p.length; i += 2) {
+      const px = p[i], py = p[i + 1];
+      let t = ((px - ax) * mx + (py - ay) * my) / L;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const cx = ax + t * L * mx, cy = ay + t * L * my;
+      let rx = px - cx, ry = py - cy;
+      const r2 = rx * rx + ry * ry;
+      if (r2 > cutoff) continue;
+      const w = Math.exp(-r2 * inv);
+      // wake: rotate about the stick, sense set by which side of the path the point is on
+      const side = mx * ry - my * rx;
+      const th = theta0 * w * (side >= 0 ? 1 : -1);
+      if (th !== 0) {
+        const c = Math.cos(th), s = Math.sin(th);
+        const nx = rx * c - ry * s, ny = rx * s + ry * c;
+        rx = nx; ry = ny;
+      }
+      // drag: carry the core along with the stick
+      const push = L * z * w;
+      p[i] = cx + rx + mx * push; p[i + 1] = cy + ry + my * push;
+    }
+  }
+  dirty = true;
+}
+
+// Rake: Jaffer's tine line. A comb of parallel tines, spaced `gap` apart, sweeps along m.
+// Displacement falls off as u^dist with u = 2^(-1/sharp), so each tine pulls a narrow tongue of ink.
+function rake(ax, ay, bx, by, gap, z, sharp) {
+  let mx = bx - ax, my = by - ay;
+  const L = Math.hypot(mx, my);
+  if (L < 1e-6) return;
+  mx /= L; my /= L;
+  const nx = -my, ny = mx;                  // tine normal
+  const u = Math.pow(2, -1 / sharp);        // per-unit falloff (bath units * 100)
+  const amp = L * z;
+  for (const d of drops) {
+    const p = d.pts;
+    for (let i = 0; i < p.length; i += 2) {
+      const off = (p[i] - bx) * nx + (p[i + 1] - by) * ny;      // signed distance from the stick's tine
+      let dist = Math.abs(((off % gap) + gap) % gap);            // distance to the nearest tine in the comb
+      dist = Math.min(dist, gap - dist);
+      const k = Math.pow(u, dist * 100);
+      p[i] += mx * amp * k; p[i + 1] += my * amp * k;
+    }
+  }
+  dirty = true;
+}
+
+// Stretched edges need new points; bunched edges can lose some. Keep the total bounded.
+function resample() {
+  let total = 0;
+  for (const d of drops) total += d.pts.length / 2;
+  const maxSeg = total > 90000 ? 0.012 : total > 50000 ? 0.008 : 0.005;
+  const minSeg = 0.0007;
+  for (const d of drops) {
+    const p = d.pts, n = p.length / 2, out = [];
+    for (let i = 0; i < n; i++) {
+      const x0 = p[2 * i], y0 = p[2 * i + 1];
+      const j = (i + 1) % n, x1 = p[2 * j], y1 = p[2 * j + 1];
+      const len = Math.hypot(x1 - x0, y1 - y0);
+      if (len < minSeg && n > 24 && out.length > 0) continue;
+      out.push(clampC(x0), clampC(y0));
+      if (len > maxSeg) {
+        const k = Math.min(16, Math.ceil(len / maxSeg));
+        for (let s = 1; s < k; s++) {
+          const t = s / k;
+          out.push(clampC(x0 + (x1 - x0) * t), clampC(y0 + (y1 - y0) * t));
+        }
+      }
+    }
+    d.pts = Float64Array.from(out);
+  }
+}
+function clampC(v) { return v < -0.6 ? -0.6 : v > 1.6 ? 1.6 : v; }
+
+/* ---------- drawing ---------- */
+function paint(c, S, pad) {
+  c.fillStyle = water();
+  c.fillRect(0, 0, S, S);
+  for (const d of drops) {
+    const p = d.pts; if (p.length < 6) continue;
+    c.beginPath();
+    c.moveTo(p[0] * S, p[1] * S);
+    for (let i = 2; i < p.length; i += 2) c.lineTo(p[i] * S, p[i + 1] * S);
+    c.closePath();
+    c.fillStyle = INKS[d.ink][1];
+    c.fill();
+  }
+  if (pad) {
+    // a soft meniscus toward the walls, like water in a wooden tray
+    const g = c.createRadialGradient(S * 0.5, S * 0.42, S * 0.35, S * 0.5, S * 0.5, S * 0.78);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(10,8,6,0.22)');
+    c.fillStyle = g; c.fillRect(0, 0, S, S);
+  }
+}
+function render() {
+  if (!dirty) return;
+  dirty = false;
+  const S = view.width;
+  paint(ctx, S, true);
+}
+let last = 0;
+function frame(now) {
+  render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+function layout() {
+  const r = bath.getBoundingClientRect();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const px = Math.max(64, Math.round(r.width * dpr));
+  if (view.width !== px) { view.width = view.height = px; ringc.width = ringc.height = px; dirty = true; }
+}
+new ResizeObserver(layout).observe(bath);
+layout();
+
+/* ---------- cursor ring ---------- */
+let hover = null;
+function drawRing() {
+  const S = ringc.width;
+  rctx.clearRect(0, 0, S, S);
+  if (!hover) return;
+  const r = tool === 'drop' ? DROP_R * dropSize * S : tool === 'stir' ? TIP_R * tipMult * S : 0.012 * S;
+  rctx.strokeStyle = 'rgba(28,25,21,0.55)'; rctx.lineWidth = Math.max(1, S / 600);
+  rctx.beginPath(); rctx.arc(hover.x * S, hover.y * S, r, 0, Math.PI * 2); rctx.stroke();
+  if (tool === 'rake') {
+    // show the comb spacing
+    const g = rakeGap() * S;
+    rctx.setLineDash([4, 6]);
+    for (let k = -3; k <= 3; k++) {
+      const y = hover.y * S + k * g;
+      rctx.beginPath(); rctx.moveTo(hover.x * S - 40, y); rctx.lineTo(hover.x * S + 40, y); rctx.stroke();
+    }
+    rctx.setLineDash([]);
+  }
+}
+function rakeGap() { return 0.045 * tipMult; }
+
+/* ---------- input ---------- */
+function toBath(e) {
+  const r = bath.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+}
+let down = false, lastP = null, lastDropP = null, holdTimer = null, strokeLen = 0;
+
+function snapshot() {
+  undoStack.push(drops.map(d => ({ ink: d.ink, pts: d.pts.slice() })));
+  if (undoStack.length > 40) undoStack.shift();
+  $('undo').disabled = false;
+}
+
+bath.addEventListener('pointerdown', e => {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  bath.setPointerCapture(e.pointerId);
+  const p = toBath(e);
+  down = true; lastP = p; hover = p; strokeLen = 0;
+  snapshot();
+  if (tool === 'drop') {
+    addDrop(p.x, p.y, DROP_R * dropSize, inkIdx);
+    lastDropP = p;
+    // hold to pour: the drop keeps growing while the stick stays put
+    clearInterval(holdTimer);
+    holdTimer = setInterval(() => {
+      if (!down || !lastP) return;
+      addDrop(lastP.x, lastP.y, DROP_R * dropSize * 0.9, inkIdx);
+      resample();
+    }, 220);
+  }
+  drawRing();
+  e.preventDefault();
+});
+
+bath.addEventListener('pointermove', e => {
+  const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+  for (const ev of events) {
+    const p = toBath(ev);
+    hover = p;
+    if (!down || !lastP) continue;
+    const pressure = ev.pointerType === 'pen' && ev.pressure > 0 ? 0.5 + ev.pressure : 1;
+    if (tool === 'drop') {
+      const moved = Math.hypot(p.x - lastDropP.x, p.y - lastDropP.y);
+      if (moved > DROP_R * dropSize * 0.6) {
+        clearInterval(holdTimer); holdTimer = null;
+        addDrop(p.x, p.y, DROP_R * dropSize, inkIdx);
+        lastDropP = p;
+      }
+    } else if (tool === 'stir') {
+      const sigma = TIP_R * tipMult;
+      // split fast moves into steps no longer than the tip, so the wake stays smooth
+      const seg = Math.hypot(p.x - lastP.x, p.y - lastP.y);
+      const steps = Math.max(1, Math.ceil(seg / (sigma * 0.5)));
+      for (let s = 1; s <= steps; s++) {
+        const t0 = (s - 1) / steps, t1 = s / steps;
+        stir(lastP.x + (p.x - lastP.x) * t0, lastP.y + (p.y - lastP.y) * t0,
+             lastP.x + (p.x - lastP.x) * t1, lastP.y + (p.y - lastP.y) * t1,
+             sigma, 0.25 + force * 1.1 * pressure, swirl);
+      }
+      strokeLen += seg;
+    } else {
+      rake(lastP.x, lastP.y, p.x, p.y, rakeGap(), 0.6 + force * 1.6, 0.35 + swirl * 1.4);
+    }
+    lastP = p;
+  }
+  if (down) resample();
+  drawRing();
+});
+
+function endPointer(e) {
+  if (!down) return;
+  down = false; lastP = null; lastDropP = null;
+  clearInterval(holdTimer); holdTimer = null;
+  resample();
+  drawRing();
+}
+bath.addEventListener('pointerup', endPointer);
+bath.addEventListener('pointercancel', endPointer);
+bath.addEventListener('pointerleave', () => { if (!down) { hover = null; drawRing(); } });
+
+/* ---------- controls ---------- */
+function setTool(t) {
+  tool = t;
+  for (const b of $('toolSeg').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.tool === t));
+  drawRing();
+}
+$('toolSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTool(b.dataset.tool); });
+
+function setInk(i) {
+  inkIdx = (i + INKS.length) % INKS.length;
+  for (const [k, el] of [...$('inks').children].entries()) el.setAttribute('aria-pressed', String(k === inkIdx));
+}
+INKS.forEach(([name, hex], i) => {
+  const b = document.createElement('button');
+  b.className = 'chip'; b.type = 'button'; b.style.background = hex; b.title = `${name} (${i + 1})`;
+  b.setAttribute('aria-label', name); b.setAttribute('aria-pressed', String(i === 0));
+  b.addEventListener('click', () => setInk(i));
+  $('inks').appendChild(b);
+});
+
+function bindSlider(id, fmt, set) {
+  const el = $(id), out = $(id + 'V');
+  const apply = () => { const v = parseFloat(el.value); set(v); out.textContent = fmt(v); drawRing(); };
+  el.addEventListener('input', apply); apply();
+}
+bindSlider('size',  v => v.toFixed(1) + 'x', v => dropSize = v);
+bindSlider('tip',   v => v.toFixed(1) + 'x', v => tipMult = v);
+bindSlider('force', v => Math.round(v * 100) + '%', v => force = v);
+bindSlider('swirl', v => Math.round(v * 100) + '%', v => swirl = v);
+
+function status(msg) { $('status').textContent = msg; }
+
+function fresh() { snapshot(); drops = []; dirty = true; status('Fresh water.'); }
+function undo() {
+  const s = undoStack.pop();
+  if (!s) return;
+  drops = s; dirty = true;
+  $('undo').disabled = undoStack.length === 0;
+}
+// A sumi target: alternating black and white drops on one spot, the way the bath is traditionally opened.
+function rings(cx = 0.5, cy = 0.5, n = 9) {
+  snapshot();
+  for (let k = 0; k < n; k++) addDrop(cx, cy, DROP_R * 1.15, k % 2 === 0 ? 0 : 1);
+  resample();
+}
+$('fresh').addEventListener('click', fresh);
+$('undo').addEventListener('click', undo);
+$('rings').addEventListener('click', () => rings(hover ? hover.x : 0.5, hover ? hover.y : 0.5));
+$('undo').disabled = true;
+
+/* ---------- prints ---------- */
+let dl = null;
+(async () => { try { dl = window.claude && window.claude.use ? await window.claude.use('downloads') : null; } catch (_) { dl = null; } })();
+
+async function handOver(filename, data) {
+  if (dl) {
+    try { await dl.save({ filename, data }); status('Saved ' + filename); return; }
+    catch (err) {
+      if (err && err.code === 'declined') { status('Not saved.'); return; }
+      if (err && err.code === 'rate_limited') { status('One save at a time.'); return; }
+    }
+  }
+  // plain browser (the file on disk): an ordinary download
+  try {
+    const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data]));
+    const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    status('Saved ' + filename);
+  } catch (_) { status('Saving is not available in this view.'); }
+}
+function stamp() { const d = new Date(); return d.toISOString().slice(0, 19).replace(/[:T]/g, '-'); }
+
+async function pullPNG() {
+  const S = 2048, c = document.createElement('canvas'); c.width = c.height = S;
+  paint(c.getContext('2d'), S, false);
+  const blob = await new Promise(res => c.toBlob(res, 'image/png'));
+  if (!blob) { status('Could not render the print.'); return; }
+  await handOver('ink-on-water-' + stamp() + '.png', blob);
+}
+function pullSVG() {
+  const U = 1000, f = v => (v * U).toFixed(1);
+  const parts = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${U} ${U}" width="${U}" height="${U}">`,
+    `<rect width="${U}" height="${U}" fill="${water()}"/>`];
+  for (const d of drops) {
+    const p = d.pts; if (p.length < 6) continue;
+    let s = `M${f(p[0])} ${f(p[1])}`;
+    for (let i = 2; i < p.length; i += 2) s += `L${f(p[i])} ${f(p[i + 1])}`;
+    parts.push(`<path d="${s}Z" fill="${INKS[d.ink][1]}"/>`);
+  }
+  parts.push('</svg>');
+  handOver('ink-on-water-' + stamp() + '.svg', parts.join('\n'));
+}
+$('png').addEventListener('click', pullPNG);
+$('svg').addEventListener('click', pullSVG);
+
+/* ---------- keys ---------- */
+window.addEventListener('keydown', e => {
+  if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName) && e.key !== 'Escape') return;
+  const k = e.key.toLowerCase();
+  if (k >= '1' && k <= '5') setInk(parseInt(k, 10) - 1);
+  else if (e.key === 'ArrowRight') setInk(inkIdx + 1);
+  else if (e.key === 'ArrowLeft') setInk(inkIdx - 1);
+  else if (k === 'd') setTool('drop');
+  else if (k === 's') setTool('stir');
+  else if (k === 'r') setTool('rake');
+  else if (k === 'z') undo();
+  else if (k === 't') rings(hover ? hover.x : 0.5, hover ? hover.y : 0.5);
+  else if (k === 'e') pullPNG();
+  else if (k === 'v') pullSVG();
+  else if (e.key === 'Enter' || e.key === 'Backspace') fresh();
+  else return;
+  e.preventDefault();
+});
+
+/* ---------- opening state: a target, then one slow stroke through it ---------- */
+(function seed() {
+  for (let k = 0; k < 9; k++) addDrop(0.5, 0.5, DROP_R * 1.15, k % 2 === 0 ? 0 : 1);
+  resample();
+  const path = [[0.22, 0.30], [0.40, 0.36], [0.56, 0.52], [0.48, 0.70], [0.70, 0.76]];
+  for (let i = 0; i < path.length - 1; i++) {
+    const [x0, y0] = path[i], [x1, y1] = path[i + 1];
+    const steps = 18;
+    for (let s = 1; s <= steps; s++) {
+      const t0 = (s - 1) / steps, t1 = s / steps;
+      stir(x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0, x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1, TIP_R, 0.9, 0.7);
+    }
+    resample();
+  }
+  undoStack.length = 0; $('undo').disabled = true;
+})();
+</script>
+</body>
+</html>
