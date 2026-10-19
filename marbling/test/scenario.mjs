@@ -7,7 +7,7 @@ await page.waitForTimeout(800); await page.evaluate(() => __ink.pause());
 // stop the clock: the frame loop keeps drawing, but we drive the physics ourselves
 const shot = async (name) => { const b = await page.locator('#bath').boundingBox(); await page.screenshot({ path: name, clip: b, timeout: 120000 }); console.log('shot', name); };
 const t0 = Date.now();
-await page.evaluate(() => { __ink.fresh(); __ink.target(0.5, 0.5, 7); __ink.run(1.0); });
+await page.evaluate(() => { __ink.fresh(); __ink.target(0.5, 0.5, 11); __ink.run(1.0); });
 await shot('s1_target.png');
 await page.evaluate(() => { __ink.stickOn(0.22, 0.3, 1); __ink.stickMove(0.45, 0.42, 0.5); __ink.stickMove(0.62, 0.62, 0.5); __ink.stickOff(); __ink.run(0.8); });
 await shot('s2_stir.png');

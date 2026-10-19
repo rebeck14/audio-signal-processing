@@ -10,27 +10,27 @@
   /* Layout: one still bath in the middle of the page, a quiet row of tools under it.
      Big water, small controls. The ink does the talking. */
   :root {
-    --paper: #efe9df;
-    --ink: #1c1915;
-    --muted: #6b6257;
-    --line: #d6cdbf;
-    --water: #c8d4dc;
-    --accent: #b3242b;
-    --chip-ring: #1c1915;
+    --paper: #141210;
+    --ink: #ece6da;
+    --muted: #9c9283;
+    --line: #2f2a24;
+    --water: #bdb5a6;
+    --accent: #d9494f;
+    --chip-ring: #ece6da;
     --disp: "Fraunces", Georgia, "Times New Roman", serif;
     --body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
     --mono: "IBM Plex Mono", Menlo, Consolas, monospace;
-    color-scheme: light;
+    color-scheme: dark;
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --paper: #141210; --ink: #ece6da; --muted: #9c9283; --line: #2f2a24;
-      --water: #c8d4dc; --accent: #d9494f; --chip-ring: #ece6da; color-scheme: dark;
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --paper: #efe9df; --ink: #1c1915; --muted: #6b6257; --line: #d6cdbf;
+      --water: #bdb5a6; --accent: #b3242b; --chip-ring: #1c1915; color-scheme: light;
     }
   }
-  :root[data-theme="dark"] {
-    --paper: #141210; --ink: #ece6da; --muted: #9c9283; --line: #2f2a24;
-    --water: #c8d4dc; --accent: #d9494f; --chip-ring: #ece6da; color-scheme: dark;
+  :root[data-theme="light"] {
+    --paper: #efe9df; --ink: #1c1915; --muted: #6b6257; --line: #d6cdbf;
+    --water: #bdb5a6; --accent: #b3242b; --chip-ring: #1c1915; color-scheme: light;
   }
 
   * { box-sizing: border-box; }
@@ -198,11 +198,11 @@ vec4 inkAt(sampler2D t, vec2 uv, float S){
   vec4 s00 = fetch(t,I,S), s10 = fetch(t,I+ivec2(1,0),S), s01 = fetch(t,I+ivec2(0,1),S), s11 = fetch(t,I+ivec2(1,1),S);
   float w00=(1.-f.x)*(1.-f.y), w10=f.x*(1.-f.y), w01=(1.-f.x)*f.y, w11=f.x*f.y;
   float cov = s00.a*w00 + s10.a*w10 + s01.a*w01 + s11.a*w11;
-  bool inside = cov >= 0.02; vec3 col = s00.rgb; float best = -1.0;
-  if ((s00.a>=0.02)==inside && w00>best){best=w00;col=s00.rgb;}
-  if ((s10.a>=0.02)==inside && w10>best){best=w10;col=s10.rgb;}
-  if ((s01.a>=0.02)==inside && w01>best){best=w01;col=s01.rgb;}
-  if ((s11.a>=0.02)==inside && w11>best){best=w11;col=s11.rgb;}
+  bool inside = cov >= 0.5; vec3 col = s00.rgb; float best = -1.0;
+  if ((s00.a>=0.5)==inside && w00>best){best=w00;col=s00.rgb;}
+  if ((s10.a>=0.5)==inside && w10>best){best=w10;col=s10.rgb;}
+  if ((s01.a>=0.5)==inside && w01>best){best=w01;col=s01.rgb;}
+  if ((s11.a>=0.5)==inside && w11>best){best=w11;col=s11.rgb;}
   return vec4(col, cov);
 }
 // Area compression of the material map at this pixel: original area per current area.
@@ -233,12 +233,15 @@ void main(){
     vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
     vec2 o = bil(tB, uv, uSizeB).rg;
     vec4 ink = inkAt(tA, o, uSizeA);
-    float J = jacobianAt(tB, uv, uSizeB);
-    float a = darkness(ink.a * J);
+    // ink is a layer on the water: it is there or it is not, with one pixel of anti-aliasing at the edge
+    float e = max(fwidth(ink.a) * 0.7, 0.003);
+    float a = smoothstep(0.5 - e, 0.5 + e, ink.a);
     vec3 col = mix(uWater, ink.rgb, a);
     if (uExport == 1) { frag = vec4(col, 1.0); return; }
     vec2 q = uv - 0.5; float r = length(q);
-    col = mix(col, vec3(0.04, 0.03, 0.02), smoothstep(0.42, 0.78, r) * 0.22);
+    col = mix(col, vec3(0.05, 0.035, 0.025), smoothstep(0.40, 0.76, r) * 0.30);
+    float edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+    col = mix(col, vec3(0.05, 0.035, 0.025), (1.0 - smoothstep(0.0, 0.035, edge)) * 0.45);
     frag = vec4(col, 1.0);
   }
   else if (uPass == 1) {            // ADVECT MAP: tA map, tC vel
@@ -251,14 +254,14 @@ void main(){
     vec2 uv = gl_FragCoord.xy / uSize;
     vec2 o = bil(tB, uv, uSizeB).rg;
     vec4 ink = inkAt(tA, o, uSize);
-    frag = vec4(ink.rgb, clamp(ink.a * jacobianAt(tB, uv, uSizeB), 0.0, 4.0));
+    frag = vec4(ink.rgb, clamp((ink.a - 0.5) * 2.5 + 0.5, 0.0, 1.0));
   }
   else if (uPass == 4) {            // STAMP: tA ink
     vec2 uv = gl_FragCoord.xy / uSize;
     vec4 old = texelFetch(tA, X, 0);
     float d = length(uv - uCenter) - uRadius;
     float a = clamp(0.5 - d*uSize, 0.0, 1.0);
-    if (a > 0.0) frag = vec4(uInkColor, max(old.a, a)); else frag = old;
+    if (a >= 0.5 || (a > 0.0 && old.a < 0.5)) frag = vec4(uInkColor, max(old.a, a)); else frag = old;
   }
   else if (uPass == 5) { frag = vec4(uWater, 0.0); }      // CLEAR INK
   else if (uPass == 6) {            // DEPOSIT surfactant: tA surf (r sumi, g clear)
@@ -347,7 +350,7 @@ void main(){
     for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) {
       vec2 uv = (gl_FragCoord.xy - 0.5 + vec2(float(i)+0.5, float(j)+0.5)/4.0) / uSize;
       vec2 o = bil(tB, uv, uSizeB).rg; vec4 ink = inkAt(tA, o, uSizeA);
-      if (ink.a * jacobianAt(tB, uv, uSizeB) >= 0.04 && distance(ink.rgb, uInkColor) < 0.05) acc += 1.0;
+      if (ink.a >= 0.5 && distance(ink.rgb, uInkColor) < 0.05) acc += 1.0;
     }
     frag = vec4(acc/16.0, 0., 0., 1.);
   }
@@ -533,7 +536,7 @@ function drawRing() {
   rctx.clearRect(0, 0, S, S);
   if (!hover) return;
   const r = (tool === 'drop' || tool === 'clear') ? DROP_R * dropSize * S : TIP_R * tipMult * S * (tool === 'rake' ? 0.45 : 1);
-  rctx.strokeStyle = 'rgba(28,25,21,0.55)'; rctx.lineWidth = Math.max(1, S / 600);
+  rctx.strokeStyle = 'rgba(28,25,21,0.45)'; rctx.lineWidth = Math.max(1, S / 600);
   const tines = tool === 'rake' ? 7 : 1, gap = 0.075 * tipMult * S;
   for (let k = 0; k < tines; k++) {
     const off = (k - (tines - 1) / 2) * gap;
@@ -571,6 +574,7 @@ function pour(p, first) {
     if (first) { stamp(p.x, p.y, r * 0.55, rgb); startTrack(rgb); }
     deposit(p.x, p.y, r, first ? 0.9 : 0.12, 0);
   } else {
+    if (first) stamp(p.x, p.y, r * 0.55, hexRGB(water()));
     deposit(p.x, p.y, r, 0, first ? 0.9 : 0.12);
   }
 }
@@ -652,15 +656,15 @@ bindSlider('tip',     v => v.toFixed(1) + 'x', v => tipMult = v);
 
 function fresh() { snapshot(); gpuClear(); track.rgb = null; status('Fresh water.'); }
 // A sumi target: sumi, then clear, then sumi again on one spot. Each new drop pushes the last ring outward.
-function rings(cx = 0.5, cy = 0.5, n = 7) {
+function rings(cx = 0.5, cy = 0.5, n = 11) {
   snapshot();
   let k = 0;
   const r = DROP_R * dropSize;
   const one = () => {
     if (k >= n) return;
-    if (k % 2 === 0) { stamp(cx, cy, r * 0.55, hexRGB(INKS[0][1])); deposit(cx, cy, r, 0.9, 0); }
-    else deposit(cx, cy, r, 0, 0.9);
-    k++; setTimeout(one, 320);
+    if (k % 2 === 0) { stamp(cx, cy, r * 0.5, hexRGB(INKS[0][1])); deposit(cx, cy, r, 0.9, 0); }
+    else { stamp(cx, cy, r * 0.5, hexRGB(water())); deposit(cx, cy, r, 0, 0.9); }
+    k++; setTimeout(one, 260);
   };
   one();
 }
@@ -806,14 +810,14 @@ window.__ink = {
   stickMove(x, y, sec) { const vx = (x - stick.x) / sec, vy = (y - stick.y) / sec; const sp = Math.hypot(vx, vy); if (sp > 0.05) { stick.nx = -vy / sp; stick.ny = vx / sp; }
     const n = Math.round(sec / DT); for (let i = 1; i <= n; i++) { stick.x += (x - stick.x) / (n - i + 1); stick.y += (y - stick.y) / (n - i + 1); stick.vx = vx; stick.vy = vy; step(DT); } display(); },
   stickOff() { stick.on = false; stick.vx = 0; stick.vy = 0; },
-  target(cx, cy, n) { const r = DROP_R * dropSize; for (let k = 0; k < n; k++) { if (k % 2 === 0) { stamp(cx, cy, r * 0.55, hexRGB(INKS[0][1])); deposit(cx, cy, r, 0.9, 0); } else deposit(cx, cy, r, 0, 0.9); this.run(0.35); } },
+  target(cx, cy, n) { const r = DROP_R * dropSize; for (let k = 0; k < n; k++) { if (k % 2 === 0) { stamp(cx, cy, r * 0.5, hexRGB(INKS[0][1])); deposit(cx, cy, r, 0.9, 0); } else { stamp(cx, cy, r * 0.5, hexRGB(water())); deposit(cx, cy, r, 0, 0.9); } this.run(0.26); } },
   fresh() { gpuClear(); },
   set(o) { if (o.tension != null) tension = o.tension; if (o.depth != null) depth = o.depth; if (o.visc != null) visc = o.visc; if (o.tip != null) tipMult = o.tip; if (o.size != null) dropSize = o.size; },
 };
 
 /* ---------- opening state: a target in the middle, already spreading ---------- */
 gpuClear();
-rings(0.5, 0.5, 7);
+rings(0.5, 0.5, 11);
 undoStack.length = 0; $('undo').disabled = true;
 requestAnimationFrame(frame);
 </script>
