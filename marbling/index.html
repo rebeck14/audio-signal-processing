@@ -530,7 +530,7 @@ function swap(p) { const t = p[0]; p[0] = p[1]; p[1] = t; }
 let tool = 'drop', inkIdx = 0;
 let dropSize = 1, tension = 0.6, depth = 0.5, visc = 0.3, tipMult = 1;
 let rakeTines = 7, rakeGapV = 0.075, rakeAngle = 0;   // the comb spreads along (cos, sin) of rakeAngle; the same angle turns a shape
-const SHP = 512;
+const SHP = 2048;   // shapes are rasterized at the ink's resolution, so one placed at 3x still has clean edges and thin lines
 let shape = null;   // {colourTex, silhouetteTex, preview: canvas, aspect}
 const DROP_R = 0.038, TIP_R = 0.022;   // the tip at 1.0x matches the reel's stroke: it moves the film well beyond its own width
 let mapDirty = false, settled = true, stepCount = 0;
@@ -609,22 +609,50 @@ function loadShapeImage(img, name) {
   cx.drawImage(img, (W - dw) / 2, (W - dh) / 2, dw, dh);
   const px = cx.getImageData(0, 0, W, W).data, n = W * W;
   // colour reduction: bucket to 4 bits per channel, keep the eight most common, assign every pixel to its nearest
-  const counts = new Map();
-  for (let i = 0; i < n; i++) if (px[4 * i + 3] > 127) { const k = ((px[4 * i] >> 4) << 8) | ((px[4 * i + 1] >> 4) << 4) | (px[4 * i + 2] >> 4); counts.set(k, (counts.get(k) || 0) + 1); }
-  if (counts.size === 0) { status('That file has no opaque pixels.'); return; }
+  // the palette comes from interior pixels only: an anti-aliased edge pixel is a blend, not a colour, and
+  // counting blends made every boundary a thin third region that broke into blocks as the ink moved
+  const key = i => ((px[4 * i] >> 4) << 8) | ((px[4 * i + 1] >> 4) << 4) | (px[4 * i + 2] >> 4);
+  const counts = new Map(); let opaque = 0;
+  for (let i = 0; i < n; i++) {
+    if (px[4 * i + 3] <= 127) continue; opaque++;
+    const x = i % W, y = (i / W) | 0; if (x === 0 || y === 0 || x === W - 1 || y === W - 1) continue;
+    const k = key(i);
+    if (key(i - 1) !== k || key(i + 1) !== k || key(i - W) !== k || key(i + W) !== k) continue;
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  for (const [k, c] of [...counts.entries()]) if (c < opaque * 0.002) counts.delete(k);   // stray specks are not colours either
+  if (opaque === 0) { status('That file has no opaque pixels.'); return; }
+  if (counts.size === 0) { status('That file has no solid areas to make ink from.'); return; }
+  // a colour that runs along most of the file's border is a background, not a shape: it is left out
+  const edge = new Map(); let edgeN = 0;
+  const x0 = Math.round((W - dw) / 2), y0 = Math.round((W - dh) / 2), x1 = Math.round((W + dw) / 2) - 1, y1 = Math.round((W + dh) / 2) - 1;   // the drawn file's rectangle
+  for (let i = 0; i < n; i++) {
+    const x = i % W, y = (i / W) | 0;
+    if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+    if (x > x0 + 1 && y > y0 + 1 && x < x1 - 1 && y < y1 - 1) continue;   // a two-pixel ring just inside the file's edge
+    edgeN++; if (px[4 * i + 3] <= 127) continue;
+    const k = ((px[4 * i] >> 4) << 8) | ((px[4 * i + 1] >> 4) << 4) | (px[4 * i + 2] >> 4); edge.set(k, (edge.get(k) || 0) + 1);
+  }
+  const bgKey = [...edge.entries()].find(([, c]) => c > 0.6 * edgeN)?.[0];
+  if (bgKey != null) counts.delete(bgKey);
+  if (counts.size === 0) { status('That file is a single flat colour.'); return; }
   const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k]) => [((k >> 8) & 15) / 15, ((k >> 4) & 15) / 15, (k & 15) / 15]);
+  const bgRGB = bgKey == null ? null : [((bgKey >> 8) & 15) * 17, ((bgKey >> 4) & 15) * 17, (bgKey & 15) * 17];
   const label = new Int8Array(n).fill(-1), silhouette = new Int8Array(n).fill(-1);
   for (let i = 0; i < n; i++) {
     if (px[4 * i + 3] <= 127) continue;
+    if (bgRGB && Math.abs(px[4 * i] - bgRGB[0]) < 24 && Math.abs(px[4 * i + 1] - bgRGB[1]) < 24 && Math.abs(px[4 * i + 2] - bgRGB[2]) < 24) continue;
     const r = px[4 * i] / 255, g = px[4 * i + 1] / 255, b = px[4 * i + 2] / 255;
     let best = 0, bd = 1e9;
     for (let k = 0; k < top.length; k++) { const d = (r - top[k][0]) ** 2 + (g - top[k][1]) ** 2 + (b - top[k][2]) ** 2; if (d < bd) { bd = d; best = k; } }
     label[i] = best; silhouette[i] = 0;
   }
   if (shape) { gl.deleteTexture(shape.colourTex.tex); gl.deleteTexture(shape.silhouetteTex.tex); }
-  shape = { colourTex: uploadField(labelsToField(label, top, W), W), silhouetteTex: uploadField(labelsToField(silhouette, [[0, 0, 0]], W), W), preview: c };
+  if (bgRGB) { const im = cx.getImageData(0, 0, W, W); for (let i = 0; i < n; i++) if (label[i] < 0) im.data[4 * i + 3] = 0; cx.putImageData(im, 0, 0); }
+  const pv = document.createElement('canvas'); pv.width = pv.height = 512; pv.getContext('2d').drawImage(c, 0, 0, 512, 512);   // a small copy for the hover preview
+  shape = { colourTex: uploadField(labelsToField(label, top, W), W), silhouetteTex: uploadField(labelsToField(silhouette, [[0, 0, 0]], W), W), preview: pv };
   setTool('shape');
-  status(`Loaded ${name}: ${top.length} colour${top.length === 1 ? '' : 's'}. Click to place it. ⌘ and move for size, ⌘⌥ and move to turn.`);
+  status(`Loaded ${name}: ${top.length} colour${top.length === 1 ? '' : 's'}${bgRGB ? ', background left out' : ''}. Click to place it. ⌘ and move for size, ⌘⌥ and move to turn.`);
 }
 function loadShapeFile(file) {
   if (!file) return;
@@ -1096,6 +1124,8 @@ window.__ink = {
   stickOff() { stick.on = false; stick.vx = 0; stick.vy = 0; },
   target(cx, cy, n) { const r = DROP_R * dropSize; for (let k = 0; k < n; k++) { if (k % 2 === 0) { stamp(cx, cy, r * 0.5, hexRGB(INKS[0][1])); deposit(cx, cy, r, 0.9, 0); } else { stamp(cx, cy, r * 0.5, hexRGB(water()), true); deposit(cx, cy, r, 0, 0.9); } this.run(0.26); } },
   fresh() { gpuClear(); },
+  still() { settled = true; stick.on = false; },   // hold the bath: the loop displays but does not step, for tests
+  rebake(n) { for (let i = 0; i < n; i++) { mapDirty = true; bake(); } display(); gl.finish(); },   // re-rasterize in place, for tests
   field(which) {   // the stirred flow (sol), the surface flow (tot) or pressure as a PNG data URL, for tests: red = x, green = y, mid-grey = 0
     const t = which === 'tot' ? tot : which === 'press' ? press[0] : sol[0], n = SIM * SIM, buf = new Float32Array(n * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo); gl.readPixels(0, 0, SIM, SIM, gl.RGBA, gl.FLOAT, buf);
