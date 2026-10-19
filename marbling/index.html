@@ -16,7 +16,7 @@
     --line: #2f2a24;
     --water: #bdb5a6;
     --accent: #d9494f;
-    --chip-ring: #ece6da;
+    --chip-ring: #ffffff; --chip-edge: rgba(255,255,255,.62);
     --disp: "Fraunces", Georgia, "Times New Roman", serif;
     --body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
     --mono: "IBM Plex Mono", Menlo, Consolas, monospace;
@@ -25,12 +25,12 @@
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
       --paper: #efe9df; --ink: #1c1915; --muted: #6b6257; --line: #d6cdbf;
-      --water: #bdb5a6; --accent: #b3242b; --chip-ring: #1c1915; color-scheme: light;
+      --water: #bdb5a6; --accent: #b3242b; --chip-ring: #1c1915; --chip-edge: rgba(0,0,0,.3); color-scheme: light;
     }
   }
   :root[data-theme="light"] {
     --paper: #efe9df; --ink: #1c1915; --muted: #6b6257; --line: #d6cdbf;
-    --water: #bdb5a6; --accent: #b3242b; --chip-ring: #1c1915; color-scheme: light;
+    --water: #bdb5a6; --accent: #b3242b; --chip-ring: #1c1915; --chip-edge: rgba(0,0,0,.3); color-scheme: light;
   }
 
   * { box-sizing: border-box; }
@@ -71,8 +71,8 @@
   .seg button[aria-pressed="true"] kbd { opacity: .7; }
 
   .inks { display: flex; gap: 8px; align-items: center; }
-  .chip { position: relative; width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(0,0,0,.18); }
-  .chip[aria-pressed="true"] { border-color: var(--chip-ring); }
+  .chip { position: relative; width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--chip-edge); padding: 0; cursor: pointer; }
+  .chip[aria-pressed="true"] { border-color: var(--chip-ring); box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--chip-ring); }
   .chip input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
   .chip.water { border-radius: 6px; margin-left: 6px; }
   .inks .lbl { font-size: 11px; color: var(--muted); margin-left: 4px; }
@@ -89,6 +89,9 @@
   .btn:hover { border-color: var(--ink); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .btn:disabled { opacity: .4; cursor: default; }
+  .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+  .chk input { accent-color: var(--accent); margin: 0; }
+  .bath.over { box-shadow: inset 0 0 0 3px var(--accent); }
 
   footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
   footer p { margin: 0; max-width: 72ch; }
@@ -105,7 +108,7 @@
 <div class="app">
   <header>
     <h1>Ink on Water <span>墨流し</span></h1>
-    <p>Tap to drop. Hold to pour. Drag to stir. ⌘ and move for size. ⌥ and move, or ← →, to turn the rake.</p>
+    <p>Tap to drop. Hold to pour. Drag to stir. ⌘ and move for size, ⌘⌥ and move to turn the rake or shape. Scroll works too. Drop an SVG on the water to make it ink.</p>
   </header>
 
   <div class="stage">
@@ -117,10 +120,11 @@
 
   <div class="tools">
     <div class="seg" role="group" aria-label="Tool" id="toolSeg">
-      <button type="button" data-tool="drop" aria-pressed="false">Ink<kbd>D</kbd></button>
+      <button type="button" data-tool="drop" aria-pressed="true">Ink<kbd>D</kbd></button>
       <button type="button" data-tool="clear" aria-pressed="false">Clear<kbd>C</kbd></button>
-      <button type="button" data-tool="stir" aria-pressed="true">Stir<kbd>S</kbd></button>
+      <button type="button" data-tool="stir" aria-pressed="false">Stir<kbd>S</kbd></button>
       <button type="button" data-tool="rake" aria-pressed="false">Rake<kbd>R</kbd></button>
+      <button type="button" data-tool="shape" aria-pressed="false">Shape<kbd>F</kbd></button>
     </div>
     <div class="inks" id="inks" role="group" aria-label="Ink"></div>
     <div class="sliders">
@@ -133,6 +137,8 @@
       <div class="sl"><label for="gap">Tine gap <b id="gapV">7.5%</b></label><input id="gap" type="range" min="0.02" max="0.16" step="0.005" value="0.075"></div>
     </div>
     <div class="actions">
+      <button class="btn" type="button" id="loadShape">Load shape…</button>
+      <label class="chk" for="fileColours"><input id="fileColours" type="checkbox" checked> file colours</label>
       <button class="btn" type="button" id="rings">Rings<kbd>T</kbd></button>
       <button class="btn" type="button" id="undo">Undo<kbd>Z</kbd></button>
       <button class="btn" type="button" id="fresh">Fresh water<kbd>⏎</kbd></button>
@@ -186,7 +192,7 @@ uniform sampler2D tA, tB, tC, tD;
 uniform int uPass; uniform float uSize, uSizeA, uSizeB, uSizeC;
 uniform float uDt, uKappa, uKappa2, uBeta, uBetaSol, uVisc, uDiff;
 uniform vec2 uCenter, uStickVel, uNormal; uniform float uRadius, uTines, uGap, uMass, uMass2, uFar;
-uniform vec3 uInkColor, uWater; uniform int uExport, uErase;
+uniform vec3 uInkColor, uWater; uniform int uExport, uErase, uUseFile; uniform float uAngle, uShapeSize, uShapePx, uVort; uniform vec2 uPrev;
 in vec2 vUv; out vec4 frag;
 
 ivec2 clampI(ivec2 i, float S){ int L=int(S)-1; return clamp(i, ivec2(0), ivec2(L)); }
@@ -321,28 +327,60 @@ void main(){
     up.x *= smoothstep(0.0, 3.0*h, min(uv.x, 1.0-uv.x)); up.y *= smoothstep(0.0, 3.0*h, min(uv.y, 1.0-uv.y));
     frag = vec4(up, 0., 1.);
   }
-  else if (uPass == 9) {            // SOLENOIDAL forces: tA sol vel.  viscosity, floor drag, stick (no-slip disk), walls
+  else if (uPass == 9) {            // SOLENOIDAL forces: tA sol vel, tB curl.  viscosity, floor drag, vorticity confinement, stick, walls
     float h = 1.0/uSize; vec2 uv = gl_FragCoord.xy / uSize;
     vec2 us = texelFetch(tA, X, 0).rg;
     vec2 avg = 0.25*(fetch(tA,X+ivec2(1,0),uSize).rg + fetch(tA,X-ivec2(1,0),uSize).rg + fetch(tA,X+ivec2(0,1),uSize).rg + fetch(tA,X-ivec2(0,1),uSize).rg);
     us = mix(us, avg, uVisc);
     us *= exp(-uBetaSol * uDt);
+    // vorticity confinement: the grid smears eddies, this feeds them back so a wake stays curled and thin
+    float cC = texelFetch(tB, X, 0).r;
+    vec2 g = 0.5*vec2(abs(fetch(tB,X+ivec2(1,0),uSize).r) - abs(fetch(tB,X-ivec2(1,0),uSize).r), abs(fetch(tB,X+ivec2(0,1),uSize).r) - abs(fetch(tB,X-ivec2(0,1),uSize).r));
+    float gl2 = length(g);
+    if (gl2 > 1e-5) { g /= gl2; us += uVort * h * vec2(g.y*cC, -g.x*cC) * uDt; }
     if (uTines > 0.5) {
+      float R = uRadius, R2 = R*R;
+      vec2 v = uStickVel;
       for (int k = 0; k < 16; k++) {
         if (float(k) >= uTines) break;
-        vec2 c = uCenter + (float(k) - (uTines-1.0)*0.5) * uGap * uNormal;
-        float d = length(uv - c);
-        if (d < uRadius*1.6) { float w = 1.0 - smoothstep(uRadius*0.6, uRadius*1.6, d); us = mix(us, uStickVel, w); }
-        else if (d < uRadius*14.0) {
-          // the film is a sheet: a moving point drags the surface far beyond its own size, falling off about as 1/r
-          float far = uFar * (uRadius / d) * (1.0 - smoothstep(uRadius*8.0, uRadius*14.0, d));
-          us += uStickVel * far * clamp(9.0 * uDt, 0.0, 1.0);
+        vec2 off = (float(k) - (uTines-1.0)*0.5) * uGap * uNormal;
+        // the tine swept a segment this step: force along all of it, so a fast flick leaves one continuous wake
+        vec2 a = uPrev + off, b = uCenter + off, ab = b - a; float ab2 = dot(ab, ab);
+        float t = ab2 > 1e-10 ? clamp(dot(uv - a, ab) / ab2, 0.0, 1.0) : 1.0;
+        vec2 r = uv - (a + t*ab); float d2 = dot(r, r);
+        if (d2 < 9.0*R2) {
+          float core = exp(-d2 / (1.15*R2));
+          us = mix(us, v*0.68, min(0.92, 0.85*core));             // the wet stick drags the film with it
+          // a cylinder pushing through a sheet: fluid ahead is shoved aside and closes behind, a doublet
+          vec2 doublet = (2.0*dot(v, r)*r / max(d2, 1e-8) - v) * (R2 / max(d2, R2));
+          us += doublet * exp(-d2 / (1.6*R2)) * uDt * 3.5;
         }
       }
     }
     us.x *= smoothstep(0.0, 2.5*h, min(uv.x, 1.0-uv.x)); us.y *= smoothstep(0.0, 2.5*h, min(uv.y, 1.0-uv.y));
-    float sp = length(us); if (sp > 2.5) us *= 2.5/sp;
+    float sp = length(us); if (sp > 3.2) us *= 3.2/sp;
     frag = vec4(us, 0., 1.);
+  }
+  else if (uPass == 22) {           // RESTRICT RESIDUAL: tA fine pressure, tB fine rhs -> coarse texel = mean residual of its four fine texels
+    float hf = 1.0/uSizeA; float acc = 0.0;
+    for (int j = 0; j < 2; j++) for (int i = 0; i < 2; i++) {
+      ivec2 F = X*2 + ivec2(i, j);
+      float pc = texelFetch(tA, F, 0).r;
+      float lap = (fetch(tA,F+ivec2(1,0),uSizeA).r + fetch(tA,F-ivec2(1,0),uSizeA).r + fetch(tA,F+ivec2(0,1),uSizeA).r + fetch(tA,F-ivec2(0,1),uSizeA).r - 4.0*pc) / (hf*hf);
+      acc += texelFetch(tB, F, 0).r - lap;
+    }
+    frag = vec4(acc * 0.25, 0., 0., 1.);
+  }
+  else if (uPass == 23) {           // PROLONG + ADD: tA coarse correction, tB fine pressure
+    vec2 c = (gl_FragCoord.xy * 0.5) - 0.5; vec2 f = fract(c); ivec2 C = ivec2(floor(c));
+    float v = mix(mix(fetch(tA,C,uSizeA).r, fetch(tA,C+ivec2(1,0),uSizeA).r, f.x), mix(fetch(tA,C+ivec2(0,1),uSizeA).r, fetch(tA,C+ivec2(1,1),uSizeA).r, f.x), f.y);
+    frag = vec4(texelFetch(tB, X, 0).r + v, 0., 0., 1.);
+  }
+  else if (uPass == 25) { frag = vec4(0.); }   // ZERO
+  else if (uPass == 21) {           // CURL of tA
+    float h = 1.0/uSize;
+    float c = (fetch(tA,X+ivec2(1,0),uSize).g - fetch(tA,X-ivec2(1,0),uSize).g - fetch(tA,X+ivec2(0,1),uSize).r + fetch(tA,X-ivec2(0,1),uSize).r) * 0.5 / h;
+    frag = vec4(c, 0., 0., 1.);
   }
   else if (uPass == 10) {           // DIVERGENCE: tA sol vel
     float h = 1.0/uSize;
@@ -379,6 +417,34 @@ void main(){
     }
     frag = vec4(acc/16.0, 0., 0., 1.);
   }
+  else if (uPass == 19) {           // STAMP SHAPE: tA ink, tD shape (same format as ink: region colour + distance in shape texels)
+    vec2 uv = gl_FragCoord.xy / uSize;
+    vec4 old = texelFetch(tA, X, 0);
+    vec2 q = uv - uCenter; float ca = cos(-uAngle), sa = sin(-uAngle);
+    vec2 suv = vec2(q.x*ca - q.y*sa, q.x*sa + q.y*ca) / (2.0*uShapeSize) + 0.5;
+    if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) { frag = old; return; }
+    vec3 other; vec4 r = inkSample(tD, vec2(suv.x, 1.0 - suv.y), uShapePx, other);
+    vec3 region = r.a >= 0.0 ? r.rgb : other;
+    float d = abs(r.a) * (2.0*uShapeSize) / uShapePx;        // shape texels to bath units
+    if (region.r < -0.5) {                                     // outside the shape, inside its box: the shape is a new boundary nearby
+      frag = (same(old.rgb, uUseFile == 1 ? other : uInkColor)) ? old : vec4(old.rgb, min(old.a, d));
+      return;
+    }
+    vec3 newCol = (uUseFile == 1) ? region : uInkColor;
+    frag = same(old.rgb, newCol) ? vec4(newCol, min(max(old.a, d), DCAP)) : vec4(newCol, min(d, DCAP));
+  }
+  else if (uPass == 20) {           // DEPOSIT over a shape: tA surf, tD shape
+    vec2 uv = gl_FragCoord.xy / uSize;
+    vec2 s = texelFetch(tA, X, 0).rg;
+    vec2 q = uv - uCenter; float ca = cos(-uAngle), sa = sin(-uAngle);
+    vec2 suv = vec2(q.x*ca - q.y*sa, q.x*sa + q.y*ca) / (2.0*uShapeSize) + 0.5;
+    if (suv.x >= 0.0 && suv.x <= 1.0 && suv.y >= 0.0 && suv.y <= 1.0) {
+      vec3 other; vec4 r = inkSample(tD, vec2(suv.x, 1.0 - suv.y), uShapePx, other);
+      vec3 region = r.a >= 0.0 ? r.rgb : other;
+      if (region.r > -0.5) s.r = min(s.r + uMass, 1.6);
+    }
+    frag = vec4(s, 0., 1.);
+  }
   else if (uPass == 16 || uPass == 17 || uPass == 18) {   // SMOOTH TENSION: 13-tap Gaussian. 16 = horizontal from the film, 17 = vertical, 18 = horizontal again
     float w[7]; w[0]=0.1330; w[1]=0.1260; w[2]=0.1071; w[3]=0.0817; w[4]=0.0559; w[5]=0.0344; w[6]=0.0190;
     float acc = 0.0, norm = 0.0;
@@ -399,7 +465,7 @@ gl.useProgram(prog);
 const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
 gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 gl.disable(gl.BLEND); gl.disable(gl.DITHER);
-const U = {}; for (const n of ['tA','tB','tC','tD','uPass','uSize','uSizeA','uSizeB','uSizeC','uFar','uErase','uDt','uKappa','uKappa2','uBeta','uBetaSol','uVisc','uDiff','uCenter','uStickVel','uNormal','uRadius','uTines','uGap','uMass','uMass2','uInkColor','uWater','uExport']) U[n] = gl.getUniformLocation(prog, n);
+const U = {}; for (const n of ['tA','tB','tC','tD','uPass','uSize','uSizeA','uSizeB','uSizeC','uFar','uErase','uUseFile','uAngle','uShapeSize','uShapePx','uVort','uPrev','uDt','uKappa','uKappa2','uBeta','uBetaSol','uVisc','uDiff','uCenter','uStickVel','uNormal','uRadius','uTines','uGap','uMass','uMass2','uInkColor','uWater','uExport']) U[n] = gl.getUniformLocation(prog, n);
 gl.uniform1i(U.tA, 0); gl.uniform1i(U.tB, 1); gl.uniform1i(U.tC, 2); gl.uniform1i(U.tD, 3);
 
 function target(size, float) {
@@ -413,35 +479,51 @@ function target(size, float) {
 }
 const pair = (size, float) => [target(size, float), target(size, float)];
 const sol = pair(SIM, true), pot = pair(SIM, true), surf = pair(SIM, true), press = pair(SIM, true);
-const tot = target(SIM, true), div = target(SIM, true), phiH = target(SIM, true), phi = target(SIM, true);
+const tot = target(SIM, true), div = target(SIM, true), phiH = target(SIM, true), phi = target(SIM, true), curl = target(SIM, true);
+// pressure multigrid: a V-cycle from SIM down to 16 texels. Smoothing at every scale is what lets a stick's push reach across the bath.
+const MG = [{ p: press, rhs: div, size: SIM }];
+for (let sz = SIM / 2; sz >= 16; sz /= 2) MG.push({ p: pair(sz, true), rhs: target(sz, true), size: sz });
+function smooth(l, n) { const L = MG[l]; for (let i = 0; i < n; i++) { draw(L.p[1], 11, L.p[0], L.rhs); swap(L.p); } }
+function vcycle(l) {
+  if (l === MG.length - 1) { smooth(l, 24); return; }
+  smooth(l, 4);
+  const L = MG[l], C = MG[l + 1];
+  draw(C.rhs, 22, L.p[0], L.rhs);
+  draw(C.p[0], 25);
+  vcycle(l + 1);
+  draw(L.p[1], 23, C.p[0], L.p[0]); swap(L.p);
+  smooth(l, 4);
+}
 const map = pair(MAP, true), ink = pair(INK, true);
 const cov = target(COV, false);
 let exportFbo = null;
 
 function bind(unit, t) { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t ? t.tex : null); }
-function draw(dst, pass, a, b, c) {
+function draw(dst, pass, a, b, c, d) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, dst ? dst.fbo : null);
   const size = dst ? dst.size : view.width;
   gl.viewport(0, 0, size, size);
   gl.uniform1i(U.uPass, pass); gl.uniform1f(U.uSize, size);
   gl.uniform1f(U.uSizeA, a ? a.size : 1); gl.uniform1f(U.uSizeB, b ? b.size : 1); gl.uniform1f(U.uSizeC, c ? c.size : 1);
-  bind(0, a); bind(1, b); bind(2, c);
+  bind(0, a); bind(1, b); bind(2, c); bind(3, d);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 }
 function swap(p) { const t = p[0]; p[0] = p[1]; p[1] = t; }
 
 /* ---------- state ---------- */
-let tool = 'stir', inkIdx = 0;
+let tool = 'drop', inkIdx = 0;
 let dropSize = 1, tension = 0.6, depth = 0.5, visc = 0.3, tipMult = 1;
-let rakeTines = 7, rakeGapV = 0.075, rakeAngle = 0;   // the comb spreads along (cos, sin) of rakeAngle
-const DROP_R = 0.038, TIP_R = 0.016;
+let rakeTines = 7, rakeGapV = 0.075, rakeAngle = 0;   // the comb spreads along (cos, sin) of rakeAngle; the same angle turns a shape
+const SHP = 512;
+let shape = null;   // {colourTex, silhouetteTex, preview: canvas, aspect}
+const DROP_R = 0.038, TIP_R = 0.022;   // the tip at 1.0x matches the reel's stroke: it moves the film well beyond its own width
 let mapDirty = false, settled = true, stepCount = 0;
 const undoStack = []; const UNDO_MAX = 12;
 
 // physics knobs from the sliders
 function kappa() { return (0.0045 + 0.015 * tension) * (0.4 + 1.4 * depth); }   // surface mobility: tension drive over floor drag
 function beta() { return 6.0 + (1 - depth) * 18.0; }                               // how fast the surface settles to that balance
-function betaSol() { return 0.08 + Math.pow(1 - depth, 2) * 2.0; }
+function betaSol() { return 0.35 + Math.pow(1 - depth, 2) * 11.3; }   // a shallow bath stops fast; at the default depth a wake halves in about 0.2 s
 function viscMix() { return 0.02 + visc * 0.25; }
 
 function gpuClear() {
@@ -467,7 +549,86 @@ function deposit(x, y, r, m1, m2) {
   settled = false;
 }
 
-const stick = { on: false, x: 0.5, y: 0.5, vx: 0, vy: 0, nx: 0, ny: 1, tines: 1 };
+const stick = { on: false, x: 0.5, y: 0.5, px: 0.5, py: 0.5, tx: 0.5, ty: 0.5, vx: 0, vy: 0, nx: 0, ny: 1, tines: 1 };   // tx,ty: where the pointer is; x,y: where the stick is this substep
+
+// A loaded shape becomes ink. The file is rasterized, its colours reduced to at most eight,
+// and each texel gets its region colour plus the distance to the nearest other region: the ink format.
+function labelsToField(label, cols, W) {
+  const n = W * W, INF = 1e9, dist = new Float32Array(n).fill(INF);
+  for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x, l = label[i];
+    const bnd = (x > 0 && label[i - 1] !== l) || (x < W - 1 && label[i + 1] !== l) || (y > 0 && label[i - W] !== l) || (y < W - 1 && label[i + W] !== l) || x === 0 || y === 0 || x === W - 1 || y === W - 1;
+    if (bnd) dist[i] = 0.5;
+  }
+  // two-pass chamfer (3-4 scaled to 1 and 1.414): good to a few percent, plenty for an edge
+  for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; let d = dist[i];
+    if (x > 0) d = Math.min(d, dist[i - 1] + 1); if (y > 0) { d = Math.min(d, dist[i - W] + 1); if (x > 0) d = Math.min(d, dist[i - W - 1] + 1.414); if (x < W - 1) d = Math.min(d, dist[i - W + 1] + 1.414); }
+    dist[i] = d;
+  }
+  for (let y = W - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) {
+    const i = y * W + x; let d = dist[i];
+    if (x < W - 1) d = Math.min(d, dist[i + 1] + 1); if (y < W - 1) { d = Math.min(d, dist[i + W] + 1); if (x < W - 1) d = Math.min(d, dist[i + W + 1] + 1.414); if (x > 0) d = Math.min(d, dist[i + W - 1] + 1.414); }
+    dist[i] = d;
+  }
+  const out = new Float32Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const l = label[i], c = l < 0 ? [-1, -1, -1] : cols[l];
+    out[4 * i] = c[0]; out[4 * i + 1] = c[1]; out[4 * i + 2] = c[2]; out[4 * i + 3] = Math.min(dist[i], 64);
+  }
+  return out;
+}
+function uploadField(data, W) {
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, W, 0, gl.RGBA, gl.FLOAT, data);
+  return { tex, size: W };
+}
+function loadShapeImage(img, name) {
+  const W = SHP, c = document.createElement('canvas'); c.width = c.height = W;
+  const cx = c.getContext('2d', { willReadFrequently: true });
+  const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+  const sc = (W * 0.86) / Math.max(iw, ih), dw = iw * sc, dh = ih * sc;
+  cx.drawImage(img, (W - dw) / 2, (W - dh) / 2, dw, dh);
+  const px = cx.getImageData(0, 0, W, W).data, n = W * W;
+  // colour reduction: bucket to 4 bits per channel, keep the eight most common, assign every pixel to its nearest
+  const counts = new Map();
+  for (let i = 0; i < n; i++) if (px[4 * i + 3] > 127) { const k = ((px[4 * i] >> 4) << 8) | ((px[4 * i + 1] >> 4) << 4) | (px[4 * i + 2] >> 4); counts.set(k, (counts.get(k) || 0) + 1); }
+  if (counts.size === 0) { status('That file has no opaque pixels.'); return; }
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k]) => [((k >> 8) & 15) / 15, ((k >> 4) & 15) / 15, (k & 15) / 15]);
+  const label = new Int8Array(n).fill(-1), silhouette = new Int8Array(n).fill(-1);
+  for (let i = 0; i < n; i++) {
+    if (px[4 * i + 3] <= 127) continue;
+    const r = px[4 * i] / 255, g = px[4 * i + 1] / 255, b = px[4 * i + 2] / 255;
+    let best = 0, bd = 1e9;
+    for (let k = 0; k < top.length; k++) { const d = (r - top[k][0]) ** 2 + (g - top[k][1]) ** 2 + (b - top[k][2]) ** 2; if (d < bd) { bd = d; best = k; } }
+    label[i] = best; silhouette[i] = 0;
+  }
+  if (shape) { gl.deleteTexture(shape.colourTex.tex); gl.deleteTexture(shape.silhouetteTex.tex); }
+  shape = { colourTex: uploadField(labelsToField(label, top, W), W), silhouetteTex: uploadField(labelsToField(silhouette, [[0, 0, 0]], W), W), preview: c };
+  setTool('shape');
+  status(`Loaded ${name}: ${top.length} colour${top.length === 1 ? '' : 's'}. Click to place it. ⌘ and move for size, ⌘⌥ and move to turn.`);
+}
+function loadShapeFile(file) {
+  if (!file) return;
+  const url = URL.createObjectURL(file), img = new Image();
+  img.onload = () => { loadShapeImage(img, file.name); URL.revokeObjectURL(url); };
+  img.onerror = () => { status('Could not read that file. SVG or PNG works.'); URL.revokeObjectURL(url); };
+  img.src = url;
+}
+function shapeSize() { return 0.14 * dropSize; }   // half-width of the shape's box in bath units
+function placeShape(x, y) {
+  if (!shape) return;
+  bake();
+  const useFile = $('fileColours').checked;
+  gl.uniform1i(U.uUseFile, useFile ? 1 : 0); gl.uniform1f(U.uAngle, rakeAngle); gl.uniform1f(U.uShapeSize, shapeSize()); gl.uniform1f(U.uShapePx, SHP);
+  gl.uniform3f(U.uInkColor, ...hexRGB(INKS[inkIdx][1])); gl.uniform2f(U.uCenter, x, y);
+  draw(ink[1], 19, ink[0], null, null, useFile ? shape.colourTex : shape.silhouetteTex); swap(ink);
+  gl.uniform1f(U.uMass, 0.9);
+  draw(surf[1], 20, surf[0], null, null, shape.colourTex); swap(surf);
+  settled = false;
+}
 
 function step(dt) {
   gl.uniform1f(U.uDt, dt);
@@ -478,14 +639,15 @@ function step(dt) {
   draw(pot[1], 8, pot[0], phi); swap(pot);
   // 2. the stirred flow: viscosity, drag, stick, then make it divergence-free
   gl.uniform1f(U.uBetaSol, betaSol()); gl.uniform1f(U.uVisc, viscMix());
-  gl.uniform1f(U.uTines, stick.on ? stick.tines : 0); gl.uniform2f(U.uCenter, stick.x, stick.y);
-  gl.uniform2f(U.uStickVel, stick.vx, stick.vy); gl.uniform2f(U.uNormal, stick.nx, stick.ny);
+  gl.uniform1f(U.uTines, stick.on ? stick.tines : 0); gl.uniform2f(U.uCenter, stick.x, stick.y); gl.uniform2f(U.uPrev, stick.px, stick.py);
+  gl.uniform2f(U.uStickVel, stick.vx, stick.vy); gl.uniform2f(U.uNormal, stick.nx, stick.ny); gl.uniform1f(U.uVort, 8.5 * SIM / 512);   // the confinement force scales with the texel, so hold its effect fixed across resolutions
   // a rake's tines are thinner than the stick and spaced wider, so film between them lags and pulls into tongues
   const comb = stick.tines > 1;
   gl.uniform1f(U.uRadius, TIP_R * tipMult * (comb ? 0.45 : 1.0)); gl.uniform1f(U.uGap, rakeGapV); gl.uniform1f(U.uFar, comb ? 0.25 : 1.0);
-  draw(sol[1], 9, sol[0]); swap(sol);
+  draw(curl, 21, sol[0]);
+  draw(sol[1], 9, sol[0], curl); swap(sol);
   draw(div, 10, sol[0]);
-  for (let i = 0; i < 40; i++) { draw(press[1], 11, press[0], div); swap(press); }
+  vcycle(0); vcycle(0);   // two cycles, warm-started from the last step's pressure
   draw(sol[1], 12, sol[0], press[0]); swap(sol);
   draw(sol[1], 13, sol[0]); swap(sol);
   // 3. total surface velocity carries the film and the ink
@@ -536,11 +698,20 @@ function frame(now) {
   const el = Math.min(0.1, (now - last) / 1000); last = now;
   if (!settled || stick.on) {
     acc += el;
-    let n = 0;
-    while (acc >= DT && n < 3) { step(DT); acc -= DT; n++; }
-    if (n === 3) acc = 0;
-    // stick velocity decays between pointer events, so a pause does not keep pushing
-    stick.vx *= 0.6; stick.vy *= 0.6;
+    let n = Math.min(3, Math.floor(acc / DT));
+    if (n > 0) {
+      // the stick moved from (x,y) to the pointer (tx,ty) this frame: one velocity, the path split over the substeps
+      const x0 = stick.x, y0 = stick.y, fdt = Math.max(el, 0.004);
+      let vx = (stick.tx - x0) / fdt, vy = (stick.ty - y0) / fdt;
+      const sp = Math.hypot(vx, vy); if (sp > 3.2) { vx *= 3.2 / sp; vy *= 3.2 / sp; }
+      stick.vx = vx; stick.vy = vy;
+      for (let i = 0; i < n; i++) {
+        stick.px = x0 + (stick.tx - x0) * i / n; stick.py = y0 + (stick.ty - y0) * i / n;
+        stick.x = x0 + (stick.tx - x0) * (i + 1) / n; stick.y = y0 + (stick.ty - y0) * (i + 1) / n;
+        step(DT);
+      }
+      acc = n === 3 ? 0 : acc - n * DT;
+    }
   }
   display();
   pollTrack(now);
@@ -564,6 +735,12 @@ function drawRing() {
   const S = ringc.width;
   rctx.clearRect(0, 0, S, S);
   if (!hover) return;
+  if (tool === 'shape' && shape) {
+    const half = shapeSize() * S;
+    rctx.save(); rctx.translate(hover.x * S, hover.y * S); rctx.rotate(rakeAngle); rctx.globalAlpha = 0.45;
+    rctx.drawImage(shape.preview, -half, -half, half * 2, half * 2); rctx.restore();
+    return;
+  }
   const r = (tool === 'drop' || tool === 'clear') ? DROP_R * dropSize * S : TIP_R * tipMult * S * (tool === 'rake' ? 0.45 : 1);
   rctx.strokeStyle = 'rgba(28,25,21,0.45)'; rctx.lineWidth = Math.max(1, S / 600);
   const tines = tool === 'rake' ? rakeTines : 1, gap = rakeGapV * S;
@@ -616,12 +793,15 @@ bath.addEventListener('pointerdown', e => {
   const p = toBath(e);
   down = true; lastP = p; lastT = performance.now(); hover = p;
   snapshot();
-  if (tool === 'drop' || tool === 'clear') {
+  if (tool === 'shape') {
+    if (!shape) { $('shapeFile').click(); down = false; return; }
+    placeShape(p.x, p.y);
+  } else if (tool === 'drop' || tool === 'clear') {
     pour(p, true);
     clearInterval(pourTimer);
     pourTimer = setInterval(() => { if (down && lastP) pour(lastP, false); }, 90);
   } else {
-    stick.on = true; stick.x = p.x; stick.y = p.y; stick.vx = 0; stick.vy = 0; stick.tines = tool === 'rake' ? rakeTines : 1;
+    stick.on = true; stick.x = stick.px = stick.tx = p.x; stick.y = stick.py = stick.ty = p.y; stick.vx = 0; stick.vy = 0; stick.tines = tool === 'rake' ? rakeTines : 1;
     stick.nx = Math.cos(rakeAngle); stick.ny = Math.sin(rakeAngle);
     settled = false;
   }
@@ -630,15 +810,11 @@ bath.addEventListener('pointerdown', e => {
 bath.addEventListener('pointermove', e => {
   const p = toBath(e); hover = p;
   // ⌘ and move: size. ⌥ and move: turn the rake, right is clockwise.
-  if (e.metaKey || e.altKey) {
+  if (e.metaKey || e.ctrlKey) {
     if (modLast) {
       const dx = p.x - modLast.x;
-      if (e.metaKey) {
-        if (tool === 'drop' || tool === 'clear') setSlider('size', dropSize + dx * 4);
-        else setSlider('tip', tipMult + dx * 4);
-      } else {
-        rakeAngle += dx * Math.PI * 1.5;
-      }
+      if (e.altKey) rakeAngle += dx * Math.PI * 4;          // ⌘⌥ and move: right turns clockwise, left counter-clockwise, two turns across the bath
+      else adjustSize(Math.exp(dx * 8));                     // ⌘ and move: across the bath is about 3000x, fine near the middle
     }
     modLast = p; drawRing(); return;
   }
@@ -646,10 +822,7 @@ bath.addEventListener('pointermove', e => {
   if (down && lastP) {
     const now = performance.now(), dt = Math.max(0.004, (now - lastT) / 1000);
     if (tool === 'stir' || tool === 'rake') {
-      const vx = (p.x - lastP.x) / dt, vy = (p.y - lastP.y) / dt;
-      const sp = Math.hypot(vx, vy), cap = 2.2, k = sp > cap ? cap / sp : 1;
-      stick.vx = stick.vx * 0.5 + vx * k * 0.5; stick.vy = stick.vy * 0.5 + vy * k * 0.5;
-      stick.x = p.x; stick.y = p.y;
+      stick.tx = p.x; stick.ty = p.y;         // the frame loop moves the stick there
     } else if (Math.hypot(p.x - lastP.x, p.y - lastP.y) > DROP_R * dropSize * 0.9) {
       pour(p, true);
     }
@@ -657,6 +830,21 @@ bath.addEventListener('pointermove', e => {
   }
   drawRing();
 });
+function adjustSize(factor) {
+  if (tool === 'stir' || tool === 'rake') setSlider('tip', tipMult * factor);
+  else setSlider('size', dropSize * factor);
+}
+// trackpad and mouse wheel: size; with ⌥, turn the rake or shape
+bath.addEventListener('wheel', e => {
+  e.preventDefault();
+  const dy = Math.max(-60, Math.min(60, e.deltaY));
+  if (e.altKey) rakeAngle += dy * 0.01; else adjustSize(Math.exp(-dy * 0.004));
+  drawRing();
+}, { passive: false });
+// an SVG or PNG dropped on the water becomes a shape
+bath.addEventListener('dragover', e => { e.preventDefault(); bath.classList.add('over'); });
+bath.addEventListener('dragleave', () => bath.classList.remove('over'));
+bath.addEventListener('drop', e => { e.preventDefault(); bath.classList.remove('over'); loadShapeFile(e.dataTransfer.files[0]); });
 function endPointer() {
   if (!down) return;
   down = false; lastP = null; clearInterval(pourTimer); pourTimer = null;
@@ -734,6 +922,12 @@ function rings(cx = 0.5, cy = 0.5, n = 11) {
     k++; setTimeout(one, 260);
   };
   one();
+}
+{
+  const inp = document.createElement('input'); inp.type = 'file'; inp.id = 'shapeFile'; inp.accept = '.svg,image/svg+xml,image/png'; inp.hidden = true;
+  inp.addEventListener('change', () => { loadShapeFile(inp.files[0]); inp.value = ''; });
+  document.body.appendChild(inp);
+  $('loadShape').addEventListener('click', () => inp.click());
 }
 $('fresh').addEventListener('click', fresh);
 $('undo').addEventListener('click', undo);
@@ -851,14 +1045,15 @@ window.addEventListener('keydown', e => {
   if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName) && e.key !== 'Escape') return;
   const k = e.key.toLowerCase();
   if (k >= '1' && k <= '5') setInk(parseInt(k, 10) - 1);
-  else if (e.key === 'ArrowRight') { if (tool === 'rake') { rakeAngle += Math.PI / 36; drawRing(); } else setInk(inkIdx + 1); }
-  else if (e.key === 'ArrowLeft') { if (tool === 'rake') { rakeAngle -= Math.PI / 36; drawRing(); } else setInk(inkIdx - 1); }
+  else if (e.key === 'ArrowRight') { if (tool === 'rake' || tool === 'shape') { rakeAngle += Math.PI / 36; drawRing(); } else setInk(inkIdx + 1); }
+  else if (e.key === 'ArrowLeft') { if (tool === 'rake' || tool === 'shape') { rakeAngle -= Math.PI / 36; drawRing(); } else setInk(inkIdx - 1); }
   else if (e.key === 'ArrowUp') setInk(inkIdx - 1);
   else if (e.key === 'ArrowDown') setInk(inkIdx + 1);
   else if (k === 'd') setTool('drop');
   else if (k === 'c') setTool('clear');
   else if (k === 's') setTool('stir');
   else if (k === 'r') setTool('rake');
+  else if (k === 'f') { if (shape) setTool('shape'); else $('shapeFile').click(); }
   else if (k === 'z') undo();
   else if (k === 't') rings(hover ? hover.x : 0.5, hover ? hover.y : 0.5);
   else if (k === 'e') pullPNG();
@@ -875,12 +1070,14 @@ window.__ink = {
   sync() { gl.finish(); },
   drop(x, y, i) { inkIdx = i; tool = 'drop'; pour({ x, y }, true); settled = false; },
   clear(x, y) { tool = 'clear'; pour({ x, y }, true); settled = false; },
-  stickOn(x, y, tines, angle) { stick.on = true; stick.x = x; stick.y = y; stick.vx = 0; stick.vy = 0; stick.tines = tines || 1; stick.nx = Math.cos(angle || 0); stick.ny = Math.sin(angle || 0); settled = false; },
+  stickOn(x, y, tines, angle) { stick.on = true; stick.x = stick.px = stick.tx = x; stick.y = stick.py = stick.ty = y; stick.vx = 0; stick.vy = 0; stick.tines = tines || 1; stick.nx = Math.cos(angle || 0); stick.ny = Math.sin(angle || 0); settled = false; },
   stickMove(x, y, sec) { const vx = (x - stick.x) / sec, vy = (y - stick.y) / sec;
-    const n = Math.round(sec / DT); for (let i = 1; i <= n; i++) { stick.x += (x - stick.x) / (n - i + 1); stick.y += (y - stick.y) / (n - i + 1); stick.vx = vx; stick.vy = vy; step(DT); } display(); },
+    const n = Math.round(sec / DT); for (let i = 1; i <= n; i++) { stick.px = stick.x; stick.py = stick.y; stick.x += (x - stick.x) / (n - i + 1); stick.y += (y - stick.y) / (n - i + 1); stick.tx = stick.x; stick.ty = stick.y; stick.vx = vx; stick.vy = vy; step(DT); } display(); },
   stickOff() { stick.on = false; stick.vx = 0; stick.vy = 0; },
   target(cx, cy, n) { const r = DROP_R * dropSize; for (let k = 0; k < n; k++) { if (k % 2 === 0) { stamp(cx, cy, r * 0.5, hexRGB(INKS[0][1])); deposit(cx, cy, r, 0.9, 0); } else { stamp(cx, cy, r * 0.5, hexRGB(water()), true); deposit(cx, cy, r, 0, 0.9); } this.run(0.26); } },
   fresh() { gpuClear(); },
+  shapeFromSvg(svgText, name) { return new Promise(res => { const img = new Image(); img.onload = () => { loadShapeImage(img, name || 'test.svg'); res(true); }; img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText); }); },
+  place(x, y, angle, useFile) { rakeAngle = angle || 0; $('fileColours').checked = useFile !== false; placeShape(x, y); settled = false; },
   set(o) { if (o.tension != null) tension = o.tension; if (o.depth != null) depth = o.depth; if (o.visc != null) visc = o.visc; if (o.tip != null) tipMult = o.tip; if (o.size != null) dropSize = o.size; if (o.tines != null) rakeTines = o.tines; if (o.gap != null) rakeGapV = o.gap; },
 };
 

@@ -1,0 +1,21 @@
+import { createRequire } from 'module'; const { chromium } = createRequire(import.meta.url)(process.env.NODE_PATH + '/playwright');
+const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+const page = await browser.newPage({ viewport: { width: 1000, height: 820 }, deviceScaleFactor: 1 });
+const errs = []; page.on('pageerror', e => errs.push(e.message)); page.on('console', m => { if (m.type() === 'error') errs.push(m.text()); });
+await page.goto('file://' + process.cwd() + '/../index.html');
+await page.waitForTimeout(800); await page.evaluate(() => __ink.pause());
+const shot = async (name, full) => { const b = full ? undefined : await page.locator('#bath').boundingBox(); await page.screenshot({ path: name, clip: b, timeout: 300000 }); console.log('shot', name); };
+// an original two-colour test shape: a fish-like body with a round eye
+const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 120"><path d="M20 60 C50 10 130 10 170 60 C130 110 50 110 20 60 Z" fill="#3a7dc9"/><path d="M170 60 L198 30 L198 90 Z" fill="#3a7dc9"/><circle cx="60" cy="52" r="10" fill="#f0d84a"/><circle cx="63" cy="52" r="4" fill="#161514"/></svg>`;
+await page.evaluate(async (svg) => { await __ink.shapeFromSvg(svg, 'fish.svg'); __ink.set({ size: 1.6 }); __ink.place(0.5, 0.5, 0.3, true); __ink.run(0.2); }, svg);
+await shot('v0_page.png', true);
+await shot('v1_shape_placed.png');
+await page.evaluate(() => { __ink.run(1.2); });
+await shot('v2_shape_spread.png');
+await page.evaluate(() => { __ink.stickOn(0.3, 0.75, 1); __ink.stickMove(0.5, 0.5, 0.5); __ink.stickMove(0.7, 0.3, 0.5); __ink.stickOff(); __ink.run(0.8); });
+await shot('v3_shape_stirred.png');
+await page.evaluate(() => { __ink.fresh(); __ink.set({ size: 1.2 }); __ink.place(0.5, 0.5, 0, false); __ink.run(1.0); });
+await shot('v4_silhouette_with_ink.png');
+const st = await page.evaluate(() => ({ status: document.getElementById('status').textContent, tool: document.querySelector('#toolSeg [aria-pressed="true"]').textContent }));
+console.log(JSON.stringify({ errs: errs.slice(0, 5), st }));
+await browser.close();
