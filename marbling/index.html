@@ -207,13 +207,27 @@ vec4 inkAt(sampler2D t, vec2 uv, float S){
 // Area compression of the material map at this pixel: original area per current area.
 // Stretched film (J < 1) goes pale; film squeezed by the next drop (J > 1) goes dark. That is the ring.
 float jacobianAt(sampler2D mapTex, vec2 uv, float M){
-  float h = 1.0 / M;
+  float h = 2.0 / M;
   vec2 dx = (bil(mapTex, uv + vec2(h, 0.0), M).rg - bil(mapTex, uv - vec2(h, 0.0), M).rg) / (2.0*h);
   vec2 dy = (bil(mapTex, uv + vec2(0.0, h), M).rg - bil(mapTex, uv - vec2(0.0, h), M).rg) / (2.0*h);
   return clamp(abs(dx.x*dy.y - dx.y*dy.x), 0.0, 6.0);
 }
-float darkness(float density){ return 1.0 - exp(-2.6 * density); }
+float darkness(float density){ return 1.0 - exp(-4.5 * density); }
 vec2 velAt(vec2 uv){ return bil(tC, uv, uSizeC).rg; }   // tC = total velocity (SIM)
+// Effective tension drop of the film: sumi plus the stronger clear dispersant, box-blurred 3x3.
+float gef(sampler2D t, ivec2 i, float S){
+  float a = 0.0;
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) a += dot(fetch(t, i + ivec2(x, y), S).rg, vec2(1.0, uKappa2));
+  return a / 9.0;
+}
+// Surface velocity of the overdamped Marangoni flow: mobility times the tension gradient (2h central stencil on the blurred field)
+vec2 potTarget(sampler2D t, ivec2 i, float S){
+  float h = 1.0 / S;
+  vec2 grad = vec2(gef(t, i + ivec2(1,0), S) - gef(t, i - ivec2(1,0), S), gef(t, i + ivec2(0,1), S) - gef(t, i - ivec2(0,1), S)) / (2.0*h);
+  vec2 v = -uKappa * grad;
+  float sp = length(v); if (sp > 0.8) v *= 0.8/sp;
+  return v;
+}
 
 void main(){
   ivec2 X = ivec2(gl_FragCoord.xy);
@@ -260,8 +274,12 @@ void main(){
     vec2 uv = gl_FragCoord.xy / uSize; float h = 1.0/uSize;
     vec2 u = velAt(uv);
     vec2 s = bil(tA, uv - u*uDt, uSize).rg;
-    float div = (fetch(tC,X+ivec2(1,0),uSize).x - fetch(tC,X-ivec2(1,0),uSize).x + fetch(tC,X+ivec2(0,1),uSize).y - fetch(tC,X-ivec2(0,1),uSize).y) / (2.0*h);
-    s *= exp(clamp(-div*uDt, -1.0, 1.0));              // surface density: stretched surface thins the film
+    // div of the spreading flow = -mobility * Laplacian(tension): 5-point stencil, so no odd-even mode can grow.
+    // The stirred part is divergence-free after projection and is left out.
+    float gC = gef(tA, X, uSize);
+    float lap = (gef(tA, X+ivec2(1,0), uSize) + gef(tA, X-ivec2(1,0), uSize) + gef(tA, X+ivec2(0,1), uSize) + gef(tA, X-ivec2(0,1), uSize) - 4.0*gC) / (h*h);
+    float div = -uKappa * lap;
+    s *= exp(clamp(-div*uDt, -0.5, 0.5));             // surface density: stretched surface thins the film
     vec2 avg = 0.25*(fetch(tA,X+ivec2(1,0),uSize).rg + fetch(tA,X-ivec2(1,0),uSize).rg + fetch(tA,X+ivec2(0,1),uSize).rg + fetch(tA,X-ivec2(0,1),uSize).rg);
     s = mix(s, avg, uDiff);
     s *= exp(-0.02*uDt);
@@ -270,15 +288,9 @@ void main(){
   else if (uPass == 8) {            // POTENTIAL (Marangoni) flow: tA pot vel, tB surf
     float h = 1.0/uSize;
     vec2 up = texelFetch(tA, X, 0).rg;
-    // effective tension drop: sumi plus the stronger clear dispersant; smoothed before taking the gradient
-    #define GEF(dx,dy) dot(fetch(tB, X+ivec2(dx,dy), uSize).rg, vec2(1.0, uKappa2))
-    float gL = (GEF(-1,-1)+GEF(-1,0)+GEF(-1,1))/3.0, gR = (GEF(1,-1)+GEF(1,0)+GEF(1,1))/3.0;
-    float gB = (GEF(-1,-1)+GEF(0,-1)+GEF(1,-1))/3.0, gT = (GEF(-1,1)+GEF(0,1)+GEF(1,1))/3.0;
-    vec2 grad = vec2(gR - gL, gT - gB) / (2.0*h);
     // Overdamped surface: floor drag balances the Marangoni pull within a frame, so the surface
     // velocity is the tension gradient times a mobility (uKappa = mobility). No inertia, no shocks.
-    vec2 target = -uKappa * grad;
-    float sp = length(target); if (sp > 0.8) target *= 0.8/sp;
+    vec2 target = potTarget(tB, X, uSize);
     up = mix(up, target, clamp(uBeta * uDt, 0.0, 1.0));   // settles toward the balance at the drag rate
     vec2 uv = gl_FragCoord.xy / uSize;
     up.x *= smoothstep(0.0, 3.0*h, min(uv.x, 1.0-uv.x)); up.y *= smoothstep(0.0, 3.0*h, min(uv.y, 1.0-uv.y));
@@ -322,15 +334,17 @@ void main(){
     vec2 u = texelFetch(tA, X, 0).rg;
     frag = vec4(bil(tA, uv - u*uDt, uSize).rg, 0., 1.);
   }
-  else if (uPass == 14) {           // COMBINE: tA sol, tB pot
-    frag = vec4(texelFetch(tA,X,0).rg + texelFetch(tB,X,0).rg, 0., 1.);
+  else if (uPass == 14) {           // COMBINE: tA sol, tB pot. Both box-blurred 3x3: the material map is differentiated
+    vec2 p = vec2(0.0);             // for shading, so no grid-scale wobble may ride on the velocity that carries it.
+    for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) p += fetch(tA, X + ivec2(x, y), uSize).rg + fetch(tB, X + ivec2(x, y), uSize).rg;
+    frag = vec4(p / 9.0, 0., 1.);
   }
   else if (uPass == 15) {           // COVERAGE of one colour, 4x4 supersampled, for the readout: tA ink, tB map
     float acc = 0.0;
     for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) {
       vec2 uv = (gl_FragCoord.xy - 0.5 + vec2(float(i)+0.5, float(j)+0.5)/4.0) / uSize;
       vec2 o = bil(tB, uv, uSizeB).rg; vec4 ink = inkAt(tA, o, uSizeA);
-      if (ink.a * jacobianAt(tB, uv, uSizeB) >= 0.12 && distance(ink.rgb, uInkColor) < 0.05) acc += 1.0;
+      if (ink.a * jacobianAt(tB, uv, uSizeB) >= 0.04 && distance(ink.rgb, uInkColor) < 0.05) acc += 1.0;
     }
     frag = vec4(acc/16.0, 0., 0., 1.);
   }
