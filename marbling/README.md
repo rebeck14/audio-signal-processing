@@ -8,7 +8,7 @@ Tap to drop sumi. Hold to pour. Switch to Clear and tap on the same spot to push
 |---|---|
 | 1 to 5, ↑ ↓ | pick an ink. Click the selected chip again to change its colour. The square chip is the water. |
 | D, C, S, R, F | Ink, Clear, Stir, Rake, Shape |
-| ⌘ and move, or scroll | drop size with Ink or Clear, tip size with Stir or Rake, size with Shape. Right is bigger. |
+| ⌘ and move, or scroll | drop size with Ink or Clear, tip size with Stir or Rake, shape size with Shape, from a twentieth of the bath to three times it. Right is bigger. |
 | ⌘⌥ and move, ⌥ scroll, or ← → | turn the rake or the shape. Right is clockwise. |
 | Load shape…, or drop a file on the water | an SVG or PNG becomes ink. "file colours" keeps its colours, up to eight; off, it is a silhouette in the selected ink. |
 | Tines, Tine gap | sliders for the rake |

@@ -589,7 +589,7 @@ function loadShapeImage(img, name) {
   const W = SHP, c = document.createElement('canvas'); c.width = c.height = W;
   const cx = c.getContext('2d', { willReadFrequently: true });
   const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
-  const sc = (W * 0.86) / Math.max(iw, ih), dw = iw * sc, dh = ih * sc;
+  const sc = (W - 4) / Math.max(iw, ih), dw = iw * sc, dh = ih * sc;   // fill the texture: at 1x the shape spans the bath
   cx.drawImage(img, (W - dw) / 2, (W - dh) / 2, dw, dh);
   const px = cx.getImageData(0, 0, W, W).data, n = W * W;
   // colour reduction: bucket to 4 bits per channel, keep the eight most common, assign every pixel to its nearest
@@ -617,7 +617,8 @@ function loadShapeFile(file) {
   img.onerror = () => { status('Could not read that file. SVG or PNG works.'); URL.revokeObjectURL(url); };
   img.src = url;
 }
-function shapeSize() { return 0.14 * dropSize; }   // half-width of the shape's box in bath units
+let shapeScale = 0.5;   // 1 = the shape's box spans the bath; it goes to 3, so part of a shape can fill the water
+function shapeSize() { return 0.5 * shapeScale; }   // half-width of the shape's box in bath units
 function placeShape(x, y) {
   if (!shape) return;
   bake();
@@ -832,6 +833,7 @@ bath.addEventListener('pointermove', e => {
 });
 function adjustSize(factor) {
   if (tool === 'stir' || tool === 'rake') setSlider('tip', tipMult * factor);
+  else if (tool === 'shape') { shapeScale = Math.min(3, Math.max(0.05, shapeScale * factor)); status(`Shape at ${shapeScale.toFixed(2)}x the bath.`); drawRing(); }
   else setSlider('size', dropSize * factor);
 }
 // trackpad and mouse wheel: size; with ⌥, turn the rake or shape
@@ -1078,7 +1080,7 @@ window.__ink = {
   fresh() { gpuClear(); },
   shapeFromSvg(svgText, name) { return new Promise(res => { const img = new Image(); img.onload = () => { loadShapeImage(img, name || 'test.svg'); res(true); }; img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText); }); },
   place(x, y, angle, useFile) { rakeAngle = angle || 0; $('fileColours').checked = useFile !== false; placeShape(x, y); settled = false; },
-  set(o) { if (o.tension != null) tension = o.tension; if (o.depth != null) depth = o.depth; if (o.visc != null) visc = o.visc; if (o.tip != null) tipMult = o.tip; if (o.size != null) dropSize = o.size; if (o.tines != null) rakeTines = o.tines; if (o.gap != null) rakeGapV = o.gap; },
+  set(o) { if (o.tension != null) tension = o.tension; if (o.depth != null) depth = o.depth; if (o.visc != null) visc = o.visc; if (o.tip != null) tipMult = o.tip; if (o.size != null) dropSize = o.size; if (o.shape != null) shapeScale = o.shape; if (o.tines != null) rakeTines = o.tines; if (o.gap != null) rakeGapV = o.gap; },
 };
 
 /* ---------- opening state: still water ---------- */
