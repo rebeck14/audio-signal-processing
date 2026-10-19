@@ -103,7 +103,7 @@
 <div class="app">
   <header>
     <h1>Ink on Water <span>墨流し</span></h1>
-    <p>Tap to drop. Drag to stir. Return for fresh water.</p>
+    <p>Tap to drop. Hold to pour. Drag to stir. Return for fresh water.</p>
   </header>
 
   <div class="stage">
@@ -115,16 +115,18 @@
 
   <div class="tools">
     <div class="seg" role="group" aria-label="Tool" id="toolSeg">
-      <button type="button" data-tool="drop" aria-pressed="false">Drop<kbd>D</kbd></button>
+      <button type="button" data-tool="drop" aria-pressed="false">Ink<kbd>D</kbd></button>
+      <button type="button" data-tool="clear" aria-pressed="false">Clear<kbd>C</kbd></button>
       <button type="button" data-tool="stir" aria-pressed="true">Stir<kbd>S</kbd></button>
       <button type="button" data-tool="rake" aria-pressed="false">Rake<kbd>R</kbd></button>
     </div>
     <div class="inks" id="inks" role="group" aria-label="Ink"></div>
     <div class="sliders">
       <div class="sl"><label for="size">Drop size <b id="sizeV">1.0x</b></label><input id="size" type="range" min="0.3" max="3" step="0.1" value="1"></div>
+      <div class="sl"><label for="tension">Surface tension <b id="tensionV">60%</b></label><input id="tension" type="range" min="0.05" max="1" step="0.01" value="0.6"></div>
+      <div class="sl"><label for="depth">Bath depth <b id="depthV">50%</b></label><input id="depth" type="range" min="0" max="1" step="0.01" value="0.5"></div>
+      <div class="sl"><label for="visc">Viscosity <b id="viscV">30%</b></label><input id="visc" type="range" min="0" max="1" step="0.01" value="0.3"></div>
       <div class="sl"><label for="tip">Tip <b id="tipV">1.0x</b></label><input id="tip" type="range" min="0.3" max="3" step="0.1" value="1"></div>
-      <div class="sl"><label for="force">Stir force <b id="forceV">60%</b></label><input id="force" type="range" min="0" max="1" step="0.01" value="0.6"></div>
-      <div class="sl"><label for="swirl">Swirl <b id="swirlV">70%</b></label><input id="swirl" type="range" min="0" max="1" step="0.01" value="0.7"></div>
     </div>
     <div class="actions">
       <button class="btn" type="button" id="rings">Rings<kbd>T</kbd></button>
@@ -136,11 +138,10 @@
   </div>
 
   <footer>
-    <p class="about">Closed-form marbling after Jaffer: every drop pushes the boundaries already on the water outward by <span style="font-family:var(--mono)">√(1 + r²/d²)</span>, a rake bends them with a tine line, and the stick drags a Gaussian core with a counter-rotating wake. The picture is vectors the whole time, so the SVG is exact.</p>
+    <p class="about">Sumi ink is a surfactant. Where it lands, surface tension drops, and the surface is pulled toward clean water: that Marangoni pull is what spreads a drop and pushes earlier rings outward. The bath here is a surface flow with that pull, floor drag set by depth, viscosity, and a stick that drags water with it. Ink is carried by the flow, never painted.</p>
     <p class="status" id="status"></p>
   </footer>
 </div>
-
 <script>
 'use strict';
 /* ---------- inks: few, named ---------- */
@@ -153,225 +154,342 @@ const INKS = [
 ];
 const $ = id => document.getElementById(id);
 const bath = $('bath'), view = $('view'), ringc = $('ringc');
-const ctx = view.getContext('2d', { alpha: false });
 const rctx = ringc.getContext('2d');
+function status(msg) { $('status').textContent = msg; }
+function water() { return getComputedStyle(document.documentElement).getPropertyValue('--water').trim() || '#c8d4dc'; }
+function hexRGB(h) { const n = parseInt(h.slice(1), 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; }
+
+/* ---------- GPU ---------- */
+const gl = view.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: true });
+if (!gl || !gl.getExtension('EXT_color_buffer_float')) {
+  status('This browser cannot run the bath (needs WebGL2 with float textures).');
+  throw new Error('no webgl2 float');
+}
+const SIM = 512, MAP = 1024, INK = 2048, COV = 64;   // sized for a laptop GPU
+const DT = 1 / 60;
+
+const VERT = `#version 300 es
+layout(location=0) in vec2 aPos; out vec2 vUv;
+void main(){ vUv = aPos*0.5+0.5; gl_Position = vec4(aPos,0.,1.); }`;
+
+// One fragment program, one pass per uPass. Fields live in [0,1]^2 bath units.
+//   tA..tD : generic inputs per pass     uSize : size of the target being written
+const FRAG = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D tA, tB, tC, tD;
+uniform int uPass; uniform float uSize, uSizeA, uSizeB, uSizeC;
+uniform float uDt, uKappa, uKappa2, uBeta, uBetaSol, uVisc, uDiff;
+uniform vec2 uCenter, uStickVel, uNormal; uniform float uRadius, uTines, uGap, uMass, uMass2;
+uniform vec3 uInkColor, uWater; uniform int uExport;
+in vec2 vUv; out vec4 frag;
+
+ivec2 clampI(ivec2 i, float S){ int L=int(S)-1; return clamp(i, ivec2(0), ivec2(L)); }
+vec4 fetch(sampler2D t, ivec2 i, float S){ return texelFetch(t, clampI(i,S), 0); }
+vec4 bil(sampler2D t, vec2 uv, float S){
+  vec2 p = clamp(uv, 0.0, 1.0)*S - 0.5; vec2 i = floor(p); vec2 f = p - i; ivec2 I = ivec2(i);
+  vec4 a = fetch(t,I,S), b = fetch(t,I+ivec2(1,0),S), c = fetch(t,I+ivec2(0,1),S), d = fetch(t,I+ivec2(1,1),S);
+  return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+}
+// Ink texture: rgb colour, a = ink density per unit of original surface. Density interpolates;
+// colour snaps to the nearest texel on the same side of the edge so two inks never blend into mud.
+vec4 inkAt(sampler2D t, vec2 uv, float S){
+  vec2 p = clamp(uv, 0.0, 1.0)*S - 0.5; vec2 i = floor(p); vec2 f = p - i; ivec2 I = ivec2(i);
+  vec4 s00 = fetch(t,I,S), s10 = fetch(t,I+ivec2(1,0),S), s01 = fetch(t,I+ivec2(0,1),S), s11 = fetch(t,I+ivec2(1,1),S);
+  float w00=(1.-f.x)*(1.-f.y), w10=f.x*(1.-f.y), w01=(1.-f.x)*f.y, w11=f.x*f.y;
+  float cov = s00.a*w00 + s10.a*w10 + s01.a*w01 + s11.a*w11;
+  bool inside = cov >= 0.02; vec3 col = s00.rgb; float best = -1.0;
+  if ((s00.a>=0.02)==inside && w00>best){best=w00;col=s00.rgb;}
+  if ((s10.a>=0.02)==inside && w10>best){best=w10;col=s10.rgb;}
+  if ((s01.a>=0.02)==inside && w01>best){best=w01;col=s01.rgb;}
+  if ((s11.a>=0.02)==inside && w11>best){best=w11;col=s11.rgb;}
+  return vec4(col, cov);
+}
+// Area compression of the material map at this pixel: original area per current area.
+// Stretched film (J < 1) goes pale; film squeezed by the next drop (J > 1) goes dark. That is the ring.
+float jacobianAt(sampler2D mapTex, vec2 uv, float M){
+  float h = 1.0 / M;
+  vec2 dx = (bil(mapTex, uv + vec2(h, 0.0), M).rg - bil(mapTex, uv - vec2(h, 0.0), M).rg) / (2.0*h);
+  vec2 dy = (bil(mapTex, uv + vec2(0.0, h), M).rg - bil(mapTex, uv - vec2(0.0, h), M).rg) / (2.0*h);
+  return clamp(abs(dx.x*dy.y - dx.y*dy.x), 0.0, 6.0);
+}
+float darkness(float density){ return 1.0 - exp(-2.6 * density); }
+vec2 velAt(vec2 uv){ return bil(tC, uv, uSizeC).rg; }   // tC = total velocity (SIM)
+
+void main(){
+  ivec2 X = ivec2(gl_FragCoord.xy);
+  if (uPass == 0) {                 // DISPLAY: tA ink, tB map
+    vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
+    vec2 o = bil(tB, uv, uSizeB).rg;
+    vec4 ink = inkAt(tA, o, uSizeA);
+    float J = jacobianAt(tB, uv, uSizeB);
+    float a = darkness(ink.a * J);
+    vec3 col = mix(uWater, ink.rgb, a);
+    if (uExport == 1) { frag = vec4(col, 1.0); return; }
+    vec2 q = uv - 0.5; float r = length(q);
+    col = mix(col, vec3(0.04, 0.03, 0.02), smoothstep(0.42, 0.78, r) * 0.22);
+    frag = vec4(col, 1.0);
+  }
+  else if (uPass == 1) {            // ADVECT MAP: tA map, tC vel
+    vec2 uv = gl_FragCoord.xy / uSize;
+    vec2 u = velAt(uv);
+    frag = vec4(bil(tA, uv - u*uDt, uSize).rg, 0., 1.);
+  }
+  else if (uPass == 2) { frag = vec4(gl_FragCoord.xy / uSize, 0., 1.); }   // IDENTITY MAP
+  else if (uPass == 3) {            // BAKE: tA ink, tB map  -> ink in the current frame
+    vec2 uv = gl_FragCoord.xy / uSize;
+    vec2 o = bil(tB, uv, uSizeB).rg;
+    vec4 ink = inkAt(tA, o, uSize);
+    frag = vec4(ink.rgb, clamp(ink.a * jacobianAt(tB, uv, uSizeB), 0.0, 4.0));
+  }
+  else if (uPass == 4) {            // STAMP: tA ink
+    vec2 uv = gl_FragCoord.xy / uSize;
+    vec4 old = texelFetch(tA, X, 0);
+    float d = length(uv - uCenter) - uRadius;
+    float a = clamp(0.5 - d*uSize, 0.0, 1.0);
+    if (a > 0.0) frag = vec4(uInkColor, max(old.a, a)); else frag = old;
+  }
+  else if (uPass == 5) { frag = vec4(uWater, 0.0); }      // CLEAR INK
+  else if (uPass == 6) {            // DEPOSIT surfactant: tA surf (r sumi, g clear)
+    vec2 uv = gl_FragCoord.xy / uSize;
+    vec2 s = texelFetch(tA, X, 0).rg;
+    float d = length(uv - uCenter);
+    if (d < uRadius) { float k = cos(d/uRadius*1.5707963); k *= k; s.r = min(s.r + uMass*k, 1.6); s.g = min(s.g + uMass2*k, 1.6); }
+    frag = vec4(s, 0., 1.);
+  }
+  else if (uPass == 7) {            // ADVECT SURF on a compressible surface: tA surf, tC vel
+    vec2 uv = gl_FragCoord.xy / uSize; float h = 1.0/uSize;
+    vec2 u = velAt(uv);
+    vec2 s = bil(tA, uv - u*uDt, uSize).rg;
+    float div = (fetch(tC,X+ivec2(1,0),uSize).x - fetch(tC,X-ivec2(1,0),uSize).x + fetch(tC,X+ivec2(0,1),uSize).y - fetch(tC,X-ivec2(0,1),uSize).y) / (2.0*h);
+    s *= exp(clamp(-div*uDt, -1.0, 1.0));              // surface density: stretched surface thins the film
+    vec2 avg = 0.25*(fetch(tA,X+ivec2(1,0),uSize).rg + fetch(tA,X-ivec2(1,0),uSize).rg + fetch(tA,X+ivec2(0,1),uSize).rg + fetch(tA,X-ivec2(0,1),uSize).rg);
+    s = mix(s, avg, uDiff);
+    s *= exp(-0.02*uDt);
+    frag = vec4(clamp(s, 0.0, 1.6), 0., 1.);
+  }
+  else if (uPass == 8) {            // POTENTIAL (Marangoni) flow: tA pot vel, tB surf
+    float h = 1.0/uSize;
+    vec2 up = texelFetch(tA, X, 0).rg;
+    // effective tension drop: sumi plus the stronger clear dispersant; smoothed before taking the gradient
+    #define GEF(dx,dy) dot(fetch(tB, X+ivec2(dx,dy), uSize).rg, vec2(1.0, uKappa2))
+    float gL = (GEF(-1,-1)+GEF(-1,0)+GEF(-1,1))/3.0, gR = (GEF(1,-1)+GEF(1,0)+GEF(1,1))/3.0;
+    float gB = (GEF(-1,-1)+GEF(0,-1)+GEF(1,-1))/3.0, gT = (GEF(-1,1)+GEF(0,1)+GEF(1,1))/3.0;
+    vec2 grad = vec2(gR - gL, gT - gB) / (2.0*h);
+    // Overdamped surface: floor drag balances the Marangoni pull within a frame, so the surface
+    // velocity is the tension gradient times a mobility (uKappa = mobility). No inertia, no shocks.
+    vec2 target = -uKappa * grad;
+    float sp = length(target); if (sp > 0.8) target *= 0.8/sp;
+    up = mix(up, target, clamp(uBeta * uDt, 0.0, 1.0));   // settles toward the balance at the drag rate
+    vec2 uv = gl_FragCoord.xy / uSize;
+    up.x *= smoothstep(0.0, 3.0*h, min(uv.x, 1.0-uv.x)); up.y *= smoothstep(0.0, 3.0*h, min(uv.y, 1.0-uv.y));
+    frag = vec4(up, 0., 1.);
+  }
+  else if (uPass == 9) {            // SOLENOIDAL forces: tA sol vel.  viscosity, floor drag, stick (no-slip disk), walls
+    float h = 1.0/uSize; vec2 uv = gl_FragCoord.xy / uSize;
+    vec2 us = texelFetch(tA, X, 0).rg;
+    vec2 avg = 0.25*(fetch(tA,X+ivec2(1,0),uSize).rg + fetch(tA,X-ivec2(1,0),uSize).rg + fetch(tA,X+ivec2(0,1),uSize).rg + fetch(tA,X-ivec2(0,1),uSize).rg);
+    us = mix(us, avg, uVisc);
+    us *= exp(-uBetaSol * uDt);
+    if (uTines > 0.5) {
+      for (int k = 0; k < 9; k++) {
+        if (float(k) >= uTines) break;
+        vec2 c = uCenter + (float(k) - (uTines-1.0)*0.5) * uGap * uNormal;
+        float d = length(uv - c);
+        if (d < uRadius*1.6) { float w = 1.0 - smoothstep(uRadius*0.6, uRadius*1.6, d); us = mix(us, uStickVel, w); }
+      }
+    }
+    us.x *= smoothstep(0.0, 2.5*h, min(uv.x, 1.0-uv.x)); us.y *= smoothstep(0.0, 2.5*h, min(uv.y, 1.0-uv.y));
+    float sp = length(us); if (sp > 2.5) us *= 2.5/sp;
+    frag = vec4(us, 0., 1.);
+  }
+  else if (uPass == 10) {           // DIVERGENCE: tA sol vel
+    float h = 1.0/uSize;
+    float div = (fetch(tA,X+ivec2(1,0),uSize).x - fetch(tA,X-ivec2(1,0),uSize).x + fetch(tA,X+ivec2(0,1),uSize).y - fetch(tA,X-ivec2(0,1),uSize).y) / (2.0*h);
+    frag = vec4(div, 0., 0., 1.);
+  }
+  else if (uPass == 11) {           // JACOBI: tA pressure, tB divergence
+    float h = 1.0/uSize;
+    float p = (fetch(tA,X+ivec2(1,0),uSize).r + fetch(tA,X-ivec2(1,0),uSize).r + fetch(tA,X+ivec2(0,1),uSize).r + fetch(tA,X-ivec2(0,1),uSize).r - h*h*texelFetch(tB,X,0).r) * 0.25;
+    frag = vec4(p, 0., 0., 1.);
+  }
+  else if (uPass == 12) {           // PROJECT: tA sol vel, tB pressure
+    float h = 1.0/uSize;
+    vec2 g = vec2(fetch(tB,X+ivec2(1,0),uSize).r - fetch(tB,X-ivec2(1,0),uSize).r, fetch(tB,X+ivec2(0,1),uSize).r - fetch(tB,X-ivec2(0,1),uSize).r) / (2.0*h);
+    frag = vec4(texelFetch(tA, X, 0).rg - g, 0., 1.);
+  }
+  else if (uPass == 13) {           // ADVECT SOL: tA sol vel
+    vec2 uv = gl_FragCoord.xy / uSize;
+    vec2 u = texelFetch(tA, X, 0).rg;
+    frag = vec4(bil(tA, uv - u*uDt, uSize).rg, 0., 1.);
+  }
+  else if (uPass == 14) {           // COMBINE: tA sol, tB pot
+    frag = vec4(texelFetch(tA,X,0).rg + texelFetch(tB,X,0).rg, 0., 1.);
+  }
+  else if (uPass == 15) {           // COVERAGE of one colour, 4x4 supersampled, for the readout: tA ink, tB map
+    float acc = 0.0;
+    for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) {
+      vec2 uv = (gl_FragCoord.xy - 0.5 + vec2(float(i)+0.5, float(j)+0.5)/4.0) / uSize;
+      vec2 o = bil(tB, uv, uSizeB).rg; vec4 ink = inkAt(tA, o, uSizeA);
+      if (ink.a * jacobianAt(tB, uv, uSizeB) >= 0.12 && distance(ink.rgb, uInkColor) < 0.05) acc += 1.0;
+    }
+    frag = vec4(acc/16.0, 0., 0., 1.);
+  }
+  else { frag = vec4(0.0); }
+}`;
+
+function compile(type, src) { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh); if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh)); return sh; }
+const prog = gl.createProgram(); gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT)); gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG)); gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.disable(gl.BLEND); gl.disable(gl.DITHER);
+const U = {}; for (const n of ['tA','tB','tC','tD','uPass','uSize','uSizeA','uSizeB','uSizeC','uDt','uKappa','uKappa2','uBeta','uBetaSol','uVisc','uDiff','uCenter','uStickVel','uNormal','uRadius','uTines','uGap','uMass','uMass2','uInkColor','uWater','uExport']) U[n] = gl.getUniformLocation(prog, n);
+gl.uniform1i(U.tA, 0); gl.uniform1i(U.tB, 1); gl.uniform1i(U.tC, 2); gl.uniform1i(U.tD, 3);
+
+function target(size, float) {
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  if (float) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, size, size, 0, gl.RGBA, gl.FLOAT, null);
+  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  const fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  return { tex, fbo, size };
+}
+const pair = (size, float) => [target(size, float), target(size, float)];
+const sol = pair(SIM, true), pot = pair(SIM, true), surf = pair(SIM, true), press = pair(SIM, true);
+const tot = target(SIM, true), div = target(SIM, true);
+const map = pair(MAP, true), ink = pair(INK, true);
+const cov = target(COV, false);
+let exportFbo = null;
+
+function bind(unit, t) { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t ? t.tex : null); }
+function draw(dst, pass, a, b, c) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst ? dst.fbo : null);
+  const size = dst ? dst.size : view.width;
+  gl.viewport(0, 0, size, size);
+  gl.uniform1i(U.uPass, pass); gl.uniform1f(U.uSize, size);
+  gl.uniform1f(U.uSizeA, a ? a.size : 1); gl.uniform1f(U.uSizeB, b ? b.size : 1); gl.uniform1f(U.uSizeC, c ? c.size : 1);
+  bind(0, a); bind(1, b); bind(2, c);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+function swap(p) { const t = p[0]; p[0] = p[1]; p[1] = t; }
 
 /* ---------- state ---------- */
-// A drop is a closed polygon in bath units [0,1]^2, plus its ink index. Later drops sit on top.
-// Each one carries its bounding box (so a stroke only visits nearby drops) and a cached Path2D
-// in unit space (so untouched drops cost nothing to rebuild).
-let drops = [];          // [{ink, pts: Float64Array(2n), x0, y0, x1, y1, path, touched}]
-let tool = 'stir';
-let inkIdx = 0;
-let dropSize = 1, tipMult = 1, force = 0.6, swirl = 0.7;
-const undoStack = [];
-const DROP_R = 0.042;    // base drop radius (bath units)
-const TIP_R  = 0.028;    // base stick sigma
-const MAX_POINTS = 40000;
-const DROP_MAX = 2500;   // a stirred boundary stretches exponentially, so each drop gets a hard cap
-let dirty = true;
+let tool = 'stir', inkIdx = 0;
+let dropSize = 1, tension = 0.6, depth = 0.5, visc = 0.3, tipMult = 1;
+const DROP_R = 0.038, TIP_R = 0.016;
+let mapDirty = false, settled = true, stepCount = 0;
+const undoStack = []; const UNDO_MAX = 12;
 
-function water() { return getComputedStyle(document.documentElement).getPropertyValue('--water').trim() || '#c8d4dc'; }
+// physics knobs from the sliders
+function kappa() { return (0.003 + 0.010 * tension) * (0.4 + 1.4 * depth); }   // surface mobility: tension drive over floor drag
+function beta() { return 6.0 + (1 - depth) * 18.0; }                               // how fast the surface settles to that balance
+function betaSol() { return 0.15 + Math.pow(1 - depth, 2) * 3.0; }
+function viscMix() { return 0.02 + visc * 0.25; }
 
-function makeDrop(ink, pts) {
-  const d = { ink, pts, x0: 0, y0: 0, x1: 1, y1: 1, path: null, touched: true };
-  bbox(d); return d;
+function gpuClear() {
+  gl.uniform3f(U.uWater, ...hexRGB(water()));
+  draw(ink[0], 5); draw(map[0], 2);
+  draw(sol[0], 99); draw(pot[0], 99); draw(surf[0], 99); draw(press[0], 99); draw(tot, 99);
+  mapDirty = false; settled = true;
 }
-function bbox(d) {
-  const p = d.pts; let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (let i = 0; i < p.length; i += 2) {
-    const x = p[i], y = p[i + 1];
-    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
-  }
-  d.x0 = x0; d.y0 = y0; d.x1 = x1; d.y1 = y1;
+function bake() {
+  if (!mapDirty) return;
+  draw(ink[1], 3, ink[0], map[0]); swap(ink);
+  draw(map[0], 2); mapDirty = false;
 }
-function touch(d) { d.touched = true; d.path = null; }
-
-/* ---------- the marbling math ---------- */
-// Jaffer, "Mathematical Marbling" (2011): a drop of radius r at C moves every point P on the water to
-// C + (P - C) * sqrt(1 + r^2 / |P - C|^2). Area is conserved and boundaries never cross.
-// The displacement falls off as r^2 / d, so past ~12 r it is under a pixel and can be skipped.
-function addDrop(cx, cy, r, ink) {
-  const r2 = r * r, reach = r * 14;
-  for (const d of drops) {
-    if (d.x1 < cx - reach || d.x0 > cx + reach || d.y1 < cy - reach || d.y0 > cy + reach) continue;
-    const p = d.pts;
-    for (let i = 0; i < p.length; i += 2) {
-      const dx = p[i] - cx, dy = p[i + 1] - cy;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < 1e-12) continue;
-      const s = Math.sqrt(1 + r2 / d2);
-      p[i] = cx + dx * s; p[i + 1] = cy + dy * s;
-    }
-    touch(d); bbox(d);
-  }
-  const n = 72, pts = new Float64Array(n * 2);
-  for (let k = 0; k < n; k++) {
-    const a = (k / n) * Math.PI * 2;
-    pts[2 * k] = cx + r * Math.cos(a); pts[2 * k + 1] = cy + r * Math.sin(a);
-  }
-  drops.push(makeDrop(ink, pts));
-  if (drops.length > 300) drops.shift();
-  dirty = true;
+function stamp(x, y, r, rgb) {
+  bake();
+  gl.uniform3f(U.uInkColor, ...rgb); gl.uniform2f(U.uCenter, x, y); gl.uniform1f(U.uRadius, r);
+  draw(ink[1], 4, ink[0]); swap(ink);
+}
+function deposit(x, y, r, m1, m2) {
+  gl.uniform2f(U.uCenter, x, y); gl.uniform1f(U.uRadius, r); gl.uniform1f(U.uMass, m1); gl.uniform1f(U.uMass2, m2);
+  draw(surf[1], 6, surf[0]); swap(surf);
+  settled = false;
 }
 
-// Stick: a short segment A->B with sigma = tip radius. Points inside the core move with the stick;
-// points beside it roll in the wake, clockwise on one side and counter-clockwise on the other.
-function stir(ax, ay, bx, by, sigma, z, sw) {
-  let mx = bx - ax, my = by - ay;
-  const L = Math.hypot(mx, my);
-  if (L < 1e-6) return;
-  mx /= L; my /= L;
-  const reach = 2.6 * sigma, cutoff = reach * reach, inv = 1 / (2 * sigma * sigma);
-  const theta0 = sw * Math.min(L / sigma, 1.0) * 0.55;
-  const sx0 = Math.min(ax, bx) - reach, sx1 = Math.max(ax, bx) + reach;
-  const sy0 = Math.min(ay, by) - reach, sy1 = Math.max(ay, by) + reach;
-  for (const d of drops) {
-    if (d.x1 < sx0 || d.x0 > sx1 || d.y1 < sy0 || d.y0 > sy1) continue;
-    const p = d.pts; let hit = false;
-    for (let i = 0; i < p.length; i += 2) {
-      const px = p[i], py = p[i + 1];
-      if (px < sx0 || px > sx1 || py < sy0 || py > sy1) continue;
-      let t = ((px - ax) * mx + (py - ay) * my) / L;
-      t = t < 0 ? 0 : t > 1 ? 1 : t;
-      const cx = ax + t * L * mx, cy = ay + t * L * my;
-      let rx = px - cx, ry = py - cy;
-      const r2 = rx * rx + ry * ry;
-      if (r2 > cutoff) continue;
-      const w = Math.exp(-r2 * inv);
-      const side = mx * ry - my * rx;
-      const th = theta0 * w * (side >= 0 ? 1 : -1);
-      if (th !== 0) {
-        const c = Math.cos(th), s = Math.sin(th);
-        const nx = rx * c - ry * s, ny = rx * s + ry * c;
-        rx = nx; ry = ny;
-      }
-      const push = L * z * w;
-      p[i] = cx + rx + mx * push; p[i + 1] = cy + ry + my * push;
-      hit = true;
-    }
-    if (hit) { touch(d); d.x0 = Math.min(d.x0, sx0); d.y0 = Math.min(d.y0, sy0); d.x1 = Math.max(d.x1, sx1); d.y1 = Math.max(d.y1, sy1); }
-  }
-  dirty = true;
+const stick = { on: false, x: 0.5, y: 0.5, vx: 0, vy: 0, nx: 0, ny: 1, tines: 1 };
+
+function step(dt) {
+  gl.uniform1f(U.uDt, dt);
+  // 1. the spreading flow: Marangoni pull, floor drag
+  gl.uniform1f(U.uKappa, kappa()); gl.uniform1f(U.uKappa2, 1.7); gl.uniform1f(U.uBeta, beta());
+  draw(pot[1], 8, pot[0], surf[0]); swap(pot);
+  // 2. the stirred flow: viscosity, drag, stick, then make it divergence-free
+  gl.uniform1f(U.uBetaSol, betaSol()); gl.uniform1f(U.uVisc, viscMix());
+  gl.uniform1f(U.uTines, stick.on ? stick.tines : 0); gl.uniform2f(U.uCenter, stick.x, stick.y);
+  gl.uniform2f(U.uStickVel, stick.vx, stick.vy); gl.uniform2f(U.uNormal, stick.nx, stick.ny);
+  gl.uniform1f(U.uRadius, TIP_R * tipMult); gl.uniform1f(U.uGap, 0.05 * tipMult);
+  draw(sol[1], 9, sol[0]); swap(sol);
+  draw(div, 10, sol[0]);
+  for (let i = 0; i < 40; i++) { draw(press[1], 11, press[0], div); swap(press); }
+  draw(sol[1], 12, sol[0], press[0]); swap(sol);
+  draw(sol[1], 13, sol[0]); swap(sol);
+  // 3. total surface velocity carries the film and the ink
+  draw(tot, 14, sol[0], pot[0]);
+  gl.uniform1f(U.uDiff, 0.08);
+  draw(surf[1], 7, surf[0], null, tot); swap(surf);
+  draw(map[1], 1, map[0], null, tot); swap(map);
+  mapDirty = true; stepCount++;
+  if (stepCount % 900 === 0) bake();   // keep the map from drifting too far from the ink it samples
+}
+function display() {
+  gl.uniform3f(U.uWater, ...hexRGB(water()));
+  gl.uniform1i(U.uExport, 0);
+  draw(null, 0, ink[0], map[0]);
 }
 
-// Rake: Jaffer's tine line. A comb of parallel tines, spaced `gap` apart, sweeps along m.
-// Displacement falls off as u^dist with u = 2^(-1/sharp), so each tine pulls a narrow tongue of ink.
-// The comb spans the whole bath, so every drop is visited; it is one pass per move, not per sub-step.
-function rake(ax, ay, bx, by, gap, z, sharp) {
-  let mx = bx - ax, my = by - ay;
-  const L = Math.hypot(mx, my);
-  if (L < 1e-6) return;
-  mx /= L; my /= L;
-  const nx = -my, ny = mx;
-  const u = Math.pow(2, -1 / sharp);
-  const amp = L * z;
-  for (const d of drops) {
-    const p = d.pts;
-    for (let i = 0; i < p.length; i += 2) {
-      const off = (p[i] - bx) * nx + (p[i + 1] - by) * ny;
-      let dist = Math.abs(((off % gap) + gap) % gap);
-      dist = Math.min(dist, gap - dist);
-      const k = Math.pow(u, dist * 100);
-      p[i] += mx * amp * k; p[i + 1] += my * amp * k;
-    }
-    touch(d);
+/* ---------- spreading readout: area of the latest ink over time, fitted to R ~ t^n ---------- */
+const track = { rgb: null, t0: 0, samples: [], next: 0 };
+const covBuf = new Uint8Array(COV * COV * 4);
+function readCoverage(rgb) {
+  gl.uniform3f(U.uInkColor, ...rgb);
+  draw(cov, 15, ink[0], map[0]);
+  gl.readPixels(0, 0, COV, COV, gl.RGBA, gl.UNSIGNED_BYTE, covBuf);
+  let s = 0; for (let i = 0; i < covBuf.length; i += 4) s += covBuf[i];
+  return s / (255 * COV * COV);
+}
+function startTrack(rgb) { track.rgb = rgb; track.t0 = performance.now(); track.samples = []; track.next = 0; }
+function pollTrack(now) {
+  if (!track.rgb) return;
+  const t = (now - track.t0) / 1000;
+  if (t > 3.2) { track.rgb = null; return; }
+  if (now < track.next) return;
+  track.next = now + 100;
+  const A = readCoverage(track.rgb);
+  if (t > 0.08 && A > 0) track.samples.push([Math.log(t), 0.5 * Math.log(A)]);
+  if (track.samples.length >= 6) {
+    const n = track.samples.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (const [x, y] of track.samples) { sx += x; sy += y; sxx += x * x; sxy += x * y; }
+    const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+    if (isFinite(slope)) status(`Latest drop: front radius grows as t^${slope.toFixed(2)}. Deep-water Marangoni theory says t^0.75, a thin film t^0.25.`);
   }
-  dirty = true;
 }
 
-// Stretched edges need new points; bunched edges can lose some. Only touched drops are rebuilt,
-// and the total is capped so a long stir stays smooth.
-function resample() {
-  let total = 0;
-  for (const d of drops) total += d.pts.length >> 1;
-  const over = total > MAX_POINTS;
-  const maxSeg = over ? 0.016 : total > MAX_POINTS * 0.6 ? 0.011 : 0.007;
-  // over budget: thin every drop, not just the touched ones, until the bath is light again
-  const minSeg = over ? maxSeg * 0.45 : 0.0012;
-  if (total > MAX_POINTS * 1.5) for (const d of drops) d.touched = true;
-  for (const d of drops) {
-    if (!d.touched) continue;
-    d.touched = false;
-    const p = d.pts, n = p.length >> 1;
-    // first pass: count, so the output buffer is allocated once
-    let need = 0;
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      const len = Math.hypot(p[2 * j] - p[2 * i], p[2 * j + 1] - p[2 * i + 1]);
-      if (len < minSeg && n > 24) continue;
-      need += 1 + (len > maxSeg ? Math.min(12, Math.ceil(len / maxSeg)) - 1 : 0);
-    }
-    if (need < 3) { d.pts = p; bbox(d); continue; }
-    const out = new Float64Array(need * 2); let o = 0;
-    for (let i = 0; i < n; i++) {
-      const x0 = p[2 * i], y0 = p[2 * i + 1];
-      const j = (i + 1) % n, x1 = p[2 * j], y1 = p[2 * j + 1];
-      const len = Math.hypot(x1 - x0, y1 - y0);
-      if (len < minSeg && n > 24) continue;
-      out[o++] = clampC(x0); out[o++] = clampC(y0);
-      if (len > maxSeg) {
-        const k = Math.min(12, Math.ceil(len / maxSeg));
-        for (let s = 1; s < k; s++) {
-          const t = s / k;
-          out[o++] = clampC(x0 + (x1 - x0) * t); out[o++] = clampC(y0 + (y1 - y0) * t);
-        }
-      }
-    }
-    let q = o === out.length ? out : out.subarray(0, o);
-    // hard cap: keep every k-th point; a tangle loses detail gracefully instead of freezing the page
-    const m = q.length >> 1;
-    if (m > DROP_MAX) {
-      const k = Math.ceil(m / DROP_MAX), keep = Math.floor(m / k), r = new Float64Array(keep * 2);
-      for (let i = 0; i < keep; i++) { r[2 * i] = q[2 * i * k]; r[2 * i + 1] = q[2 * i * k + 1]; }
-      q = r;
-    }
-    d.pts = q;
-    bbox(d);
+/* ---------- frame loop ---------- */
+let last = performance.now(), acc = 0;
+function frame(now) {
+  const el = Math.min(0.1, (now - last) / 1000); last = now;
+  if (!settled || stick.on) {
+    acc += el;
+    let n = 0;
+    while (acc >= DT && n < 3) { step(DT); acc -= DT; n++; }
+    if (n === 3) acc = 0;
+    // stick velocity decays between pointer events, so a pause does not keep pushing
+    stick.vx *= 0.6; stick.vy *= 0.6;
   }
+  display();
+  pollTrack(now);
+  requestAnimationFrame(frame);
 }
-function clampC(v) { return v < -0.6 ? -0.6 : v > 1.6 ? 1.6 : v; }
-
-/* ---------- drawing ---------- */
-function pathOf(d) {
-  if (d.path) return d.path;
-  const p = d.pts, path = new Path2D();
-  path.moveTo(p[0], p[1]);
-  for (let i = 2; i < p.length; i += 2) path.lineTo(p[i], p[i + 1]);
-  path.closePath();
-  d.path = path; return path;
-}
-function paint(c, S, pad) {
-  c.setTransform(1, 0, 0, 1, 0, 0);
-  c.fillStyle = water();
-  c.fillRect(0, 0, S, S);
-  c.setTransform(S, 0, 0, S, 0, 0);     // paths live in unit space
-  for (const d of drops) {
-    if (d.pts.length < 6) continue;
-    c.fillStyle = INKS[d.ink][1];
-    c.fill(pathOf(d));
-  }
-  c.setTransform(1, 0, 0, 1, 0, 0);
-  if (pad) {
-    const g = c.createRadialGradient(S * 0.5, S * 0.42, S * 0.35, S * 0.5, S * 0.5, S * 0.78);
-    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(10,8,6,0.22)');
-    c.fillStyle = g; c.fillRect(0, 0, S, S);
-  }
-}
-function render() {
-  if (!dirty) return;
-  dirty = false;
-  paint(ctx, view.width, true);
-}
-function frame() { render(); requestAnimationFrame(frame); }
-requestAnimationFrame(frame);
 
 function layout() {
   const r = bath.getBoundingClientRect();
-  // 1.5x is plenty for ink edges and halves the fill cost of a retina bath
-  const dpr = Math.min(1.5, window.devicePixelRatio || 1);
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
   const px = Math.max(64, Math.round(r.width * dpr));
-  if (view.width !== px) { view.width = view.height = px; ringc.width = ringc.height = px; dirty = true; }
+  if (view.width !== px) { view.width = view.height = px; ringc.width = ringc.height = px; }
 }
 new ResizeObserver(layout).observe(bath);
 layout();
@@ -382,103 +500,86 @@ function drawRing() {
   const S = ringc.width;
   rctx.clearRect(0, 0, S, S);
   if (!hover) return;
-  const r = tool === 'drop' ? DROP_R * dropSize * S : tool === 'stir' ? TIP_R * tipMult * S : 0.012 * S;
+  const r = (tool === 'drop' || tool === 'clear') ? DROP_R * dropSize * S : TIP_R * tipMult * S;
   rctx.strokeStyle = 'rgba(28,25,21,0.55)'; rctx.lineWidth = Math.max(1, S / 600);
-  rctx.beginPath(); rctx.arc(hover.x * S, hover.y * S, r, 0, Math.PI * 2); rctx.stroke();
-  if (tool === 'rake') {
-    const g = rakeGap() * S;
-    rctx.setLineDash([4, 6]);
-    for (let k = -3; k <= 3; k++) {
-      const y = hover.y * S + k * g;
-      rctx.beginPath(); rctx.moveTo(hover.x * S - 40, y); rctx.lineTo(hover.x * S + 40, y); rctx.stroke();
-    }
-    rctx.setLineDash([]);
+  const tines = tool === 'rake' ? 7 : 1, gap = 0.05 * tipMult * S;
+  for (let k = 0; k < tines; k++) {
+    const off = (k - (tines - 1) / 2) * gap;
+    rctx.beginPath(); rctx.arc(hover.x * S + stick.nx * off, hover.y * S + stick.ny * off, r, 0, Math.PI * 2); rctx.stroke();
   }
 }
-function rakeGap() { return 0.045 * tipMult; }
 
 /* ---------- input ---------- */
-function toBath(e) {
-  const r = bath.getBoundingClientRect();
-  return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
-}
-let down = false, lastP = null, lastDropP = null, holdTimer = null, lastResample = 0;
+function toBath(e) { const r = bath.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height }; }
+let down = false, lastP = null, lastT = 0, pourTimer = null;
 
 function snapshot() {
-  undoStack.push(drops.map(d => makeDrop(d.ink, d.pts.slice())));
-  if (undoStack.length > 30) undoStack.shift();
+  // undo keeps the ink picture and the surfactant film; the flow restarts from rest
+  if (undoStack.length >= UNDO_MAX) { const old = undoStack.shift(); gl.deleteTexture(old.ink.tex); gl.deleteFramebuffer(old.ink.fbo); gl.deleteTexture(old.surf.tex); gl.deleteFramebuffer(old.surf.fbo); }
+  bake();
+  const i = target(INK, true), s = target(SIM, true);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, ink[0].fbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, i.fbo); gl.blitFramebuffer(0,0,INK,INK,0,0,INK,INK,gl.COLOR_BUFFER_BIT,gl.NEAREST);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, surf[0].fbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, s.fbo); gl.blitFramebuffer(0,0,SIM,SIM,0,0,SIM,SIM,gl.COLOR_BUFFER_BIT,gl.NEAREST);
+  undoStack.push({ ink: i, surf: s });
   $('undo').disabled = false;
+}
+function undo() {
+  const u = undoStack.pop(); if (!u) return;
+  gl.deleteTexture(ink[0].tex); gl.deleteFramebuffer(ink[0].fbo); ink[0] = u.ink;
+  gl.deleteTexture(surf[0].tex); gl.deleteFramebuffer(surf[0].fbo); surf[0] = u.surf;
+  draw(map[0], 2); draw(sol[0], 99); draw(pot[0], 99); draw(press[0], 99);
+  mapDirty = false; settled = false; track.rgb = null;
+  $('undo').disabled = undoStack.length === 0;
+}
+
+function pour(p, first) {
+  const r = DROP_R * dropSize;
+  if (tool === 'drop') {
+    const rgb = hexRGB(INKS[inkIdx][1]);
+    if (first) { stamp(p.x, p.y, r * 0.55, rgb); startTrack(rgb); }
+    deposit(p.x, p.y, r, first ? 0.9 : 0.12, 0);
+  } else {
+    deposit(p.x, p.y, r, 0, first ? 0.9 : 0.12);
+  }
 }
 
 bath.addEventListener('pointerdown', e => {
   if (e.button !== 0 && e.pointerType === 'mouse') return;
   bath.setPointerCapture(e.pointerId);
   const p = toBath(e);
-  down = true; lastP = p; hover = p;
+  down = true; lastP = p; lastT = performance.now(); hover = p;
   snapshot();
-  if (tool === 'drop') {
-    addDrop(p.x, p.y, DROP_R * dropSize, inkIdx);
-    lastDropP = p;
-    clearInterval(holdTimer);
-    holdTimer = setInterval(() => {
-      if (!down || !lastP) return;
-      addDrop(lastP.x, lastP.y, DROP_R * dropSize * 0.9, inkIdx);
-      resample();
-    }, 220);
+  if (tool === 'drop' || tool === 'clear') {
+    pour(p, true);
+    clearInterval(pourTimer);
+    pourTimer = setInterval(() => { if (down && lastP) pour(lastP, false); }, 90);
+  } else {
+    stick.on = true; stick.x = p.x; stick.y = p.y; stick.vx = 0; stick.vy = 0; stick.tines = tool === 'rake' ? 7 : 1;
+    settled = false;
   }
-  drawRing();
-  e.preventDefault();
+  drawRing(); e.preventDefault();
 });
-
 bath.addEventListener('pointermove', e => {
-  const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-  // Budget per frame: a fast flick is folded into a few generous steps instead of hundreds of tiny ones.
-  let budget = 10;
-  for (const ev of events) {
-    const p = toBath(ev);
-    hover = p;
-    if (!down || !lastP) continue;
-    const pressure = ev.pointerType === 'pen' && ev.pressure > 0 ? 0.5 + ev.pressure : 1;
-    if (tool === 'drop') {
-      const moved = Math.hypot(p.x - lastDropP.x, p.y - lastDropP.y);
-      if (moved > DROP_R * dropSize * 0.6) {
-        clearInterval(holdTimer); holdTimer = null;
-        addDrop(p.x, p.y, DROP_R * dropSize, inkIdx);
-        lastDropP = p;
-      }
-    } else if (tool === 'stir') {
-      const sigma = TIP_R * tipMult;
-      const seg = Math.hypot(p.x - lastP.x, p.y - lastP.y);
-      if (seg < sigma * 0.08) continue;              // jitter, not a move
-      let steps = Math.ceil(seg / (sigma * 0.9));
-      if (steps > budget) steps = Math.max(1, budget);
-      budget -= steps;
-      for (let s = 1; s <= steps; s++) {
-        const t0 = (s - 1) / steps, t1 = s / steps;
-        stir(lastP.x + (p.x - lastP.x) * t0, lastP.y + (p.y - lastP.y) * t0,
-             lastP.x + (p.x - lastP.x) * t1, lastP.y + (p.y - lastP.y) * t1,
-             sigma, 0.25 + force * 1.1 * pressure, swirl);
-      }
-    } else {
-      // the comb spans the whole bath, so one pass per frame: fold the coalesced moves into it
-      if (ev !== events[events.length - 1]) continue;
-      rake(lastP.x, lastP.y, p.x, p.y, rakeGap(), 0.35 + force * 0.65, 0.25 + swirl * 0.55);
+  const p = toBath(e); hover = p;
+  if (down && lastP) {
+    const now = performance.now(), dt = Math.max(0.004, (now - lastT) / 1000);
+    if (tool === 'stir' || tool === 'rake') {
+      const vx = (p.x - lastP.x) / dt, vy = (p.y - lastP.y) / dt;
+      const sp = Math.hypot(vx, vy), cap = 2.2, k = sp > cap ? cap / sp : 1;
+      stick.vx = stick.vx * 0.5 + vx * k * 0.5; stick.vy = stick.vy * 0.5 + vy * k * 0.5;
+      stick.x = p.x; stick.y = p.y;
+      if (sp > 0.05) { stick.nx = -vy / sp; stick.ny = vx / sp; }   // comb runs across the stroke
+    } else if (Math.hypot(p.x - lastP.x, p.y - lastP.y) > DROP_R * dropSize * 0.9) {
+      pour(p, true);
     }
-    lastP = p;
-    if (budget <= 0) break;
-  }
-  if (down) {
-    const now = performance.now();
-    if (now - lastResample > 60) { resample(); lastResample = now; }
+    lastP = p; lastT = now;
   }
   drawRing();
 });
-
 function endPointer() {
   if (!down) return;
-  down = false; lastP = null; lastDropP = null;
-  clearInterval(holdTimer); holdTimer = null;
-  resample();
+  down = false; lastP = null; clearInterval(pourTimer); pourTimer = null;
+  stick.on = false; stick.vx = 0; stick.vy = 0;
   drawRing();
 }
 bath.addEventListener('pointerup', endPointer);
@@ -494,10 +595,10 @@ function setTool(t) {
   drawRing();
 }
 $('toolSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTool(b.dataset.tool); });
-
 function setInk(i) {
   inkIdx = (i + INKS.length) % INKS.length;
   for (const [k, el] of [...$('inks').children].entries()) el.setAttribute('aria-pressed', String(k === inkIdx));
+  if (tool === 'clear') setTool('drop');
 }
 INKS.forEach(([name, hex], i) => {
   const b = document.createElement('button');
@@ -506,31 +607,30 @@ INKS.forEach(([name, hex], i) => {
   b.addEventListener('click', () => setInk(i));
   $('inks').appendChild(b);
 });
-
 function bindSlider(id, fmt, set) {
   const el = $(id), out = $(id + 'V');
   const apply = () => { const v = parseFloat(el.value); set(v); out.textContent = fmt(v); drawRing(); };
   el.addEventListener('input', apply); apply();
 }
-bindSlider('size',  v => v.toFixed(1) + 'x', v => dropSize = v);
-bindSlider('tip',   v => v.toFixed(1) + 'x', v => tipMult = v);
-bindSlider('force', v => Math.round(v * 100) + '%', v => force = v);
-bindSlider('swirl', v => Math.round(v * 100) + '%', v => swirl = v);
+bindSlider('size',    v => v.toFixed(1) + 'x', v => dropSize = v);
+bindSlider('tension', v => Math.round(v * 100) + '%', v => tension = v);
+bindSlider('depth',   v => Math.round(v * 100) + '%', v => depth = v);
+bindSlider('visc',    v => Math.round(v * 100) + '%', v => visc = v);
+bindSlider('tip',     v => v.toFixed(1) + 'x', v => tipMult = v);
 
-function status(msg) { $('status').textContent = msg; }
-
-function fresh() { snapshot(); drops = []; dirty = true; status('Fresh water.'); }
-function undo() {
-  const s = undoStack.pop();
-  if (!s) return;
-  drops = s; dirty = true;
-  $('undo').disabled = undoStack.length === 0;
-}
-// A sumi target: alternating black and white drops on one spot, the way the bath is traditionally opened.
-function rings(cx = 0.5, cy = 0.5, n = 9) {
+function fresh() { snapshot(); gpuClear(); track.rgb = null; status('Fresh water.'); }
+// A sumi target: sumi, then clear, then sumi again on one spot. Each new drop pushes the last ring outward.
+function rings(cx = 0.5, cy = 0.5, n = 7) {
   snapshot();
-  for (let k = 0; k < n; k++) addDrop(cx, cy, DROP_R * 1.15, k % 2 === 0 ? 0 : 1);
-  resample();
+  let k = 0;
+  const r = DROP_R * dropSize;
+  const one = () => {
+    if (k >= n) return;
+    if (k % 2 === 0) { stamp(cx, cy, r * 0.55, hexRGB(INKS[0][1])); deposit(cx, cy, r, 0.9, 0); }
+    else deposit(cx, cy, r, 0, 0.9);
+    k++; setTimeout(one, 320);
+  };
+  one();
 }
 $('fresh').addEventListener('click', fresh);
 $('undo').addEventListener('click', undo);
@@ -540,7 +640,6 @@ $('undo').disabled = true;
 /* ---------- prints ---------- */
 let dl = null;
 (async () => { try { dl = window.claude && window.claude.use ? await window.claude.use('downloads') : null; } catch (_) { dl = null; } })();
-
 async function handOver(filename, data) {
   if (dl) {
     try { await dl.save({ filename, data }); status('Saved ' + filename); return; }
@@ -556,27 +655,90 @@ async function handOver(filename, data) {
     status('Saved ' + filename);
   } catch (_) { status('Saving is not available in this view.'); }
 }
-function stamp() { return new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'); }
+function stamp$() { return new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'); }
 
+function renderExport(S) {
+  if (!exportFbo || exportFbo.size !== S) exportFbo = target(S, false);
+  gl.uniform3f(U.uWater, ...hexRGB(water()));
+  gl.uniform1i(U.uExport, 1);
+  draw(exportFbo, 0, ink[0], map[0]);
+  const buf = new Uint8Array(S * S * 4);
+  gl.readPixels(0, 0, S, S, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+  gl.uniform1i(U.uExport, 0);
+  return buf;
+}
 async function pullPNG() {
-  const S = 2048, c = document.createElement('canvas'); c.width = c.height = S;
-  paint(c.getContext('2d'), S, false);
+  const S = 2048, buf = renderExport(S);
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const cx = c.getContext('2d'), img = cx.createImageData(S, S);
+  // the GPU image is bottom-up
+  for (let y = 0; y < S; y++) img.data.set(buf.subarray((S - 1 - y) * S * 4, (S - y) * S * 4), y * S * 4);
+  cx.putImageData(img, 0, 0);
   const blob = await new Promise(res => c.toBlob(res, 'image/png'));
   if (!blob) { status('Could not render the print.'); return; }
-  await handOver('ink-on-water-' + stamp() + '.png', blob);
+  await handOver('ink-on-water-' + stamp$() + '.png', blob);
 }
+
+// SVG: classify every pixel by its nearest ink, then trace each ink's region with marching squares.
 function pullSVG() {
-  const U = 1000, f = v => (v * U).toFixed(1);
-  const parts = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${U} ${U}" width="${U}" height="${U}">`,
-    `<rect width="${U}" height="${U}" fill="${water()}"/>`];
-  for (const d of drops) {
-    const p = d.pts; if (p.length < 6) continue;
-    let s = `M${f(p[0])} ${f(p[1])}`;
-    for (let i = 2; i < p.length; i += 2) s += `L${f(p[i])} ${f(p[i + 1])}`;
-    parts.push(`<path d="${s}Z" fill="${INKS[d.ink][1]}"/>`);
+  const S = 1024, buf = renderExport(S);
+  const pal = INKS.map(([, h]) => hexRGB(h).map(v => v * 255)), wat = hexRGB(water()).map(v => v * 255);
+  const id = new Int8Array(S * S);
+  for (let i = 0; i < S * S; i++) {
+    const r = buf[4 * i], g = buf[4 * i + 1], b = buf[4 * i + 2];
+    let best = -1, bd = (r - wat[0]) ** 2 + (g - wat[1]) ** 2 + (b - wat[2]) ** 2;
+    for (let k = 0; k < pal.length; k++) { const d = (r - pal[k][0]) ** 2 + (g - pal[k][1]) ** 2 + (b - pal[k][2]) ** 2; if (d < bd) { bd = d; best = k; } }
+    id[i] = best;
+  }
+  const parts = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${S} ${S}" width="${S}" height="${S}">`, `<rect width="${S}" height="${S}" fill="${water()}"/>`];
+  for (let k = 0; k < pal.length; k++) {
+    const d = traceMask(id, S, k);
+    if (d) parts.push(`<path d="${d}" fill="${INKS[k][1]}" fill-rule="evenodd"/>`);
   }
   parts.push('</svg>');
-  handOver('ink-on-water-' + stamp() + '.svg', parts.join('\n'));
+  handOver('ink-on-water-' + stamp$() + '.svg', parts.join('\n'));
+}
+// Marching squares on a binary mask. Each cell edge is a node; cells contribute links between edge midpoints;
+// loops are walked from the links and written as closed paths, with the GPU's bottom-up rows flipped.
+function traceMask(id, S, k) {
+  const W = S + 3, inside = (x, y) => (x >= 0 && y >= 0 && x < S && y < S && id[y * S + x] === k) ? 1 : 0;
+  const hE = (x, y) => (y * W + x) * 2, vE = (x, y) => (y * W + x) * 2 + 1;   // edge ids: horizontal edge at (x,y)-(x+1,y), vertical at (x,y)-(x,y+1)
+  const link = new Map();
+  const add = (a, b) => { let l = link.get(a); if (!l) link.set(a, l = []); l.push(b); l = link.get(b); if (!l) link.set(b, l = []); l.push(a); };
+  for (let y = -1; y < S; y++) for (let x = -1; x < S; x++) {
+    const c = inside(x, y) | (inside(x + 1, y) << 1) | (inside(x, y + 1) << 2) | (inside(x + 1, y + 1) << 3);
+    if (c === 0 || c === 15) continue;
+    const eT = hE(x + 1, y + 2), eB = hE(x + 1, y + 1), eL = vE(x + 1, y + 1), eR = vE(x + 2, y + 1);
+    // sides: eB between (x,y)-(x+1,y) corners, eT between (x,y+1)-(x+1,y+1), eL between (x,y)-(x,y+1), eR between (x+1,y)-(x+1,y+1)
+    switch (c) {
+      case 1: case 14: add(eL, eB); break;
+      case 2: case 13: add(eB, eR); break;
+      case 3: case 12: add(eL, eR); break;
+      case 4: case 11: add(eL, eT); break;
+      case 5: case 10: add(eB, eT); break;
+      case 6: case 9:  add(eB, eL); add(eT, eR); break;   // saddle: pick one diagonal consistently
+      case 7: case 8:  add(eT, eR); break;
+    }
+  }
+  const pos = e => { const v = e & 1, n = e >> 1, x = n % W, y = (n - x) / W; return v ? [x - 1, y - 1 + 0.5] : [x - 1 + 0.5, y - 1]; };
+  const seen = new Set(); let out = '';
+  for (const start of link.keys()) {
+    if (seen.has(start)) continue;
+    let cur = start, prev = -1; const pts = [];
+    while (true) {
+      seen.add(cur); const [px, py] = pos(cur);
+      const L = pts.length;
+      // drop collinear points as we go
+      if (L >= 2 && (pts[L - 1][0] - pts[L - 2][0]) * (py - pts[L - 1][1]) === (pts[L - 1][1] - pts[L - 2][1]) * (px - pts[L - 1][0])) pts[L - 1] = [px, py]; else pts.push([px, py]);
+      const nb = link.get(cur); if (!nb) break;
+      const nxt = nb[0] === prev ? nb[1] : nb[0];
+      if (nxt === undefined || seen.has(nxt)) break;
+      prev = cur; cur = nxt;
+    }
+    if (pts.length < 3) continue;
+    out += 'M' + pts.map(([x, y]) => (x + 0.5).toFixed(1) + ' ' + (S - 0.5 - y).toFixed(1)).join('L') + 'Z';
+  }
+  return out;
 }
 $('png').addEventListener('click', pullPNG);
 $('svg').addEventListener('click', pullSVG);
@@ -589,6 +751,7 @@ window.addEventListener('keydown', e => {
   else if (e.key === 'ArrowRight') setInk(inkIdx + 1);
   else if (e.key === 'ArrowLeft') setInk(inkIdx - 1);
   else if (k === 'd') setTool('drop');
+  else if (k === 'c') setTool('clear');
   else if (k === 's') setTool('stir');
   else if (k === 'r') setTool('rake');
   else if (k === 'z') undo();
@@ -600,22 +763,11 @@ window.addEventListener('keydown', e => {
   e.preventDefault();
 });
 
-/* ---------- opening state: a target, then one slow stroke through it ---------- */
-(function seed() {
-  for (let k = 0; k < 9; k++) addDrop(0.5, 0.5, DROP_R * 1.15, k % 2 === 0 ? 0 : 1);
-  resample();
-  const path = [[0.22, 0.30], [0.40, 0.36], [0.56, 0.52], [0.48, 0.70], [0.70, 0.76]];
-  for (let i = 0; i < path.length - 1; i++) {
-    const [x0, y0] = path[i], [x1, y1] = path[i + 1];
-    const steps = 14;
-    for (let s = 1; s <= steps; s++) {
-      const t0 = (s - 1) / steps, t1 = s / steps;
-      stir(x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0, x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1, TIP_R, 0.9, 0.7);
-    }
-    resample();
-  }
-  undoStack.length = 0; $('undo').disabled = true;
-})();
+/* ---------- opening state: a target in the middle, already spreading ---------- */
+gpuClear();
+rings(0.5, 0.5, 7);
+undoStack.length = 0; $('undo').disabled = true;
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
