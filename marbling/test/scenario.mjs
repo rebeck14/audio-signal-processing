@@ -1,0 +1,22 @@
+import { createRequire } from 'module'; const { chromium } = createRequire(import.meta.url)(process.env.NODE_PATH + '/playwright');
+const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+const page = await browser.newPage({ viewport: { width: 760, height: 760 }, deviceScaleFactor: 1 });
+const errs = []; page.on('pageerror', e => errs.push(e.message)); page.on('console', m => { if (m.type() === 'error') errs.push(m.text()); });
+await page.goto('file://' + process.cwd() + '/../index.html');
+await page.waitForTimeout(800); await page.evaluate(() => __ink.pause());
+// stop the clock: the frame loop keeps drawing, but we drive the physics ourselves
+const shot = async (name) => { const b = await page.locator('#bath').boundingBox(); await page.screenshot({ path: name, clip: b, timeout: 120000 }); console.log('shot', name); };
+const t0 = Date.now();
+await page.evaluate(() => { __ink.fresh(); __ink.target(0.5, 0.5, 7); __ink.run(1.0); });
+await shot('s1_target.png');
+await page.evaluate(() => { __ink.stickOn(0.22, 0.3, 1); __ink.stickMove(0.45, 0.42, 0.5); __ink.stickMove(0.62, 0.62, 0.5); __ink.stickOff(); __ink.run(0.8); });
+await shot('s2_stir.png');
+await page.evaluate(() => { __ink.fresh(); __ink.drop(0.3, 0.3, 2); __ink.run(0.6); __ink.drop(0.65, 0.3, 4); __ink.run(0.6); __ink.drop(0.5, 0.62, 3); __ink.run(0.6); __ink.drop(0.3, 0.7, 0); __ink.run(0.6); __ink.drop(0.7, 0.7, 1); __ink.run(1.0); });
+await shot('s3_drops.png');
+await page.evaluate(() => { __ink.stickOn(0.2, 0.5, 1); __ink.stickMove(0.5, 0.45, 0.6); __ink.stickMove(0.8, 0.55, 0.6); __ink.stickOff(); __ink.run(0.8); });
+await shot('s4_drops_stirred.png');
+await page.evaluate(() => { __ink.stickOn(0.5, 0.15, 7); __ink.stickMove(0.5, 0.85, 1.2); __ink.stickOff(); __ink.run(0.8); });
+await shot('s5_rake.png');
+const st = await page.evaluate(() => document.getElementById('status').textContent);
+console.log(JSON.stringify({ errs: errs.slice(0, 5), st, seconds: (Date.now() - t0) / 1000 }));
+await browser.close();

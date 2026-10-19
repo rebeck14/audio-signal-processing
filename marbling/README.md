@@ -26,3 +26,7 @@ Sumi ink is a surfactant. Where it lands, surface tension drops, and the surface
 What is verified: the shaders compile and run, a drop spreads into a pale disk with a dark rim, a clear drop inside it makes a ring, and the stick wake is a projected flow. What is not yet verified: the numbers. Making this the most accurate suminagashi simulator means filming a real bath and fitting the mobility, the drag, and the ring spacing to it.
 
 The reel that started this showed chromaSpill by cpreid2 (Apache-2.0), a WebGL bath with a surfactant pressure solve and vorticity confinement. This is an independent implementation with a different model: overdamped Marangoni flow, two surfactant species, and Jacobian-shaded ink density.
+
+## Testing
+
+`test/scenario.mjs` drives the bath without the clock through the reel's sequence: a target, a stir through it, five drops, a stir between them, a rake. It needs Playwright and writes one PNG per stage. The `window.__ink` hook it uses (`run`, `drop`, `clear`, `stickOn`, `stickMove`, `stickOff`, `target`, `fresh`, `set`, `pause`, `resume`, `sync`) is also handy from the browser console. The `f*.png` files beside it are the frames from a full 512-grid run.

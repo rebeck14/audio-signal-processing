@@ -166,6 +166,7 @@ if (!gl || !gl.getExtension('EXT_color_buffer_float')) {
   throw new Error('no webgl2 float');
 }
 const SIM = 512, MAP = 1024, INK = 2048, COV = 64;   // sized for a laptop GPU
+const BLUR_REPS = Math.max(1, Math.round(SIM / 128));  // smoothing width in bath units stays fixed as the grid changes
 const DT = 1 / 60;
 
 const VERT = `#version 300 es
@@ -179,7 +180,7 @@ precision highp float; precision highp int;
 uniform sampler2D tA, tB, tC, tD;
 uniform int uPass; uniform float uSize, uSizeA, uSizeB, uSizeC;
 uniform float uDt, uKappa, uKappa2, uBeta, uBetaSol, uVisc, uDiff;
-uniform vec2 uCenter, uStickVel, uNormal; uniform float uRadius, uTines, uGap, uMass, uMass2;
+uniform vec2 uCenter, uStickVel, uNormal; uniform float uRadius, uTines, uGap, uMass, uMass2, uFar;
 uniform vec3 uInkColor, uWater; uniform int uExport;
 in vec2 vUv; out vec4 frag;
 
@@ -305,6 +306,11 @@ void main(){
         vec2 c = uCenter + (float(k) - (uTines-1.0)*0.5) * uGap * uNormal;
         float d = length(uv - c);
         if (d < uRadius*1.6) { float w = 1.0 - smoothstep(uRadius*0.6, uRadius*1.6, d); us = mix(us, uStickVel, w); }
+        else if (d < uRadius*14.0) {
+          // the film is a sheet: a moving point drags the surface far beyond its own size, falling off about as 1/r
+          float far = uFar * (uRadius / d) * (1.0 - smoothstep(uRadius*8.0, uRadius*14.0, d));
+          us += uStickVel * far * clamp(9.0 * uDt, 0.0, 1.0);
+        }
       }
     }
     us.x *= smoothstep(0.0, 2.5*h, min(uv.x, 1.0-uv.x)); us.y *= smoothstep(0.0, 2.5*h, min(uv.y, 1.0-uv.y));
@@ -345,11 +351,11 @@ void main(){
     }
     frag = vec4(acc/16.0, 0., 0., 1.);
   }
-  else if (uPass == 16 || uPass == 17) {   // SMOOTH TENSION: 13-tap Gaussian, horizontal then vertical. tA = surf (16) or the horizontal result (17)
+  else if (uPass == 16 || uPass == 17 || uPass == 18) {   // SMOOTH TENSION: 13-tap Gaussian. 16 = horizontal from the film, 17 = vertical, 18 = horizontal again
     float w[7]; w[0]=0.1330; w[1]=0.1260; w[2]=0.1071; w[3]=0.0817; w[4]=0.0559; w[5]=0.0344; w[6]=0.0190;
     float acc = 0.0, norm = 0.0;
     for (int k = -6; k <= 6; k++) {
-      ivec2 off = (uPass == 16) ? ivec2(k, 0) : ivec2(0, k);
+      ivec2 off = (uPass == 17) ? ivec2(0, k) : ivec2(k, 0);
       float v = (uPass == 16) ? dot(fetch(tA, X + off, uSize).rg, vec2(1.0, uKappa2)) : fetch(tA, X + off, uSize).r;
       float wk = w[k < 0 ? -k : k]; acc += v * wk; norm += wk;
     }
@@ -365,7 +371,7 @@ gl.useProgram(prog);
 const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
 gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 gl.disable(gl.BLEND); gl.disable(gl.DITHER);
-const U = {}; for (const n of ['tA','tB','tC','tD','uPass','uSize','uSizeA','uSizeB','uSizeC','uDt','uKappa','uKappa2','uBeta','uBetaSol','uVisc','uDiff','uCenter','uStickVel','uNormal','uRadius','uTines','uGap','uMass','uMass2','uInkColor','uWater','uExport']) U[n] = gl.getUniformLocation(prog, n);
+const U = {}; for (const n of ['tA','tB','tC','tD','uPass','uSize','uSizeA','uSizeB','uSizeC','uFar','uDt','uKappa','uKappa2','uBeta','uBetaSol','uVisc','uDiff','uCenter','uStickVel','uNormal','uRadius','uTines','uGap','uMass','uMass2','uInkColor','uWater','uExport']) U[n] = gl.getUniformLocation(prog, n);
 gl.uniform1i(U.tA, 0); gl.uniform1i(U.tB, 1); gl.uniform1i(U.tC, 2); gl.uniform1i(U.tD, 3);
 
 function target(size, float) {
@@ -404,9 +410,9 @@ let mapDirty = false, settled = true, stepCount = 0;
 const undoStack = []; const UNDO_MAX = 12;
 
 // physics knobs from the sliders
-function kappa() { return (0.0008 + 0.0028 * tension) * (0.4 + 1.4 * depth); }  // surface mobility: tension drive over floor drag (~0.2 bath/s for a fresh drop)
+function kappa() { return (0.0045 + 0.015 * tension) * (0.4 + 1.4 * depth); }   // surface mobility: tension drive over floor drag
 function beta() { return 6.0 + (1 - depth) * 18.0; }                               // how fast the surface settles to that balance
-function betaSol() { return 0.15 + Math.pow(1 - depth, 2) * 3.0; }
+function betaSol() { return 0.08 + Math.pow(1 - depth, 2) * 2.0; }
 function viscMix() { return 0.02 + visc * 0.25; }
 
 function gpuClear() {
@@ -438,12 +444,15 @@ function step(dt) {
   // 1. the spreading flow: Marangoni pull, floor drag
   gl.uniform1f(U.uKappa, kappa()); gl.uniform1f(U.uKappa2, 1.7); gl.uniform1f(U.uBeta, beta());
   draw(phiH, 16, surf[0]); draw(phi, 17, phiH);
+  for (let r = 1; r < BLUR_REPS; r++) { draw(phiH, 18, phi); draw(phi, 17, phiH); }
   draw(pot[1], 8, pot[0], phi); swap(pot);
   // 2. the stirred flow: viscosity, drag, stick, then make it divergence-free
   gl.uniform1f(U.uBetaSol, betaSol()); gl.uniform1f(U.uVisc, viscMix());
   gl.uniform1f(U.uTines, stick.on ? stick.tines : 0); gl.uniform2f(U.uCenter, stick.x, stick.y);
   gl.uniform2f(U.uStickVel, stick.vx, stick.vy); gl.uniform2f(U.uNormal, stick.nx, stick.ny);
-  gl.uniform1f(U.uRadius, TIP_R * tipMult); gl.uniform1f(U.uGap, 0.05 * tipMult);
+  // a rake's tines are thinner than the stick and spaced wider, so film between them lags and pulls into tongues
+  const comb = stick.tines > 1;
+  gl.uniform1f(U.uRadius, TIP_R * tipMult * (comb ? 0.45 : 1.0)); gl.uniform1f(U.uGap, 0.075 * tipMult); gl.uniform1f(U.uFar, comb ? 0.25 : 1.0);
   draw(sol[1], 9, sol[0]); swap(sol);
   draw(div, 10, sol[0]);
   for (let i = 0; i < 40; i++) { draw(press[1], 11, press[0], div); swap(press); }
@@ -491,8 +500,9 @@ function pollTrack(now) {
 }
 
 /* ---------- frame loop ---------- */
-let last = performance.now(), acc = 0;
+let last = performance.now(), acc = 0, paused = false;
 function frame(now) {
+  if (paused) { requestAnimationFrame(frame); return; }
   const el = Math.min(0.1, (now - last) / 1000); last = now;
   if (!settled || stick.on) {
     acc += el;
@@ -522,9 +532,9 @@ function drawRing() {
   const S = ringc.width;
   rctx.clearRect(0, 0, S, S);
   if (!hover) return;
-  const r = (tool === 'drop' || tool === 'clear') ? DROP_R * dropSize * S : TIP_R * tipMult * S;
+  const r = (tool === 'drop' || tool === 'clear') ? DROP_R * dropSize * S : TIP_R * tipMult * S * (tool === 'rake' ? 0.45 : 1);
   rctx.strokeStyle = 'rgba(28,25,21,0.55)'; rctx.lineWidth = Math.max(1, S / 600);
-  const tines = tool === 'rake' ? 7 : 1, gap = 0.05 * tipMult * S;
+  const tines = tool === 'rake' ? 7 : 1, gap = 0.075 * tipMult * S;
   for (let k = 0; k < tines; k++) {
     const off = (k - (tines - 1) / 2) * gap;
     rctx.beginPath(); rctx.arc(hover.x * S + stick.nx * off, hover.y * S + stick.ny * off, r, 0, Math.PI * 2); rctx.stroke();
@@ -784,6 +794,22 @@ window.addEventListener('keydown', e => {
   else return;
   e.preventDefault();
 });
+
+/* ---------- test hook: drives the bath without the clock, so a headless run is deterministic ---------- */
+window.__ink = {
+  pause() { paused = true; }, resume() { paused = false; last = performance.now(); },
+  run(sec) { const n = Math.round(sec / DT); for (let i = 0; i < n; i++) step(DT); display(); gl.finish(); },
+  sync() { gl.finish(); },
+  drop(x, y, i) { inkIdx = i; tool = 'drop'; pour({ x, y }, true); settled = false; },
+  clear(x, y) { tool = 'clear'; pour({ x, y }, true); settled = false; },
+  stickOn(x, y, tines) { stick.on = true; stick.x = x; stick.y = y; stick.vx = 0; stick.vy = 0; stick.tines = tines || 1; settled = false; },
+  stickMove(x, y, sec) { const vx = (x - stick.x) / sec, vy = (y - stick.y) / sec; const sp = Math.hypot(vx, vy); if (sp > 0.05) { stick.nx = -vy / sp; stick.ny = vx / sp; }
+    const n = Math.round(sec / DT); for (let i = 1; i <= n; i++) { stick.x += (x - stick.x) / (n - i + 1); stick.y += (y - stick.y) / (n - i + 1); stick.vx = vx; stick.vy = vy; step(DT); } display(); },
+  stickOff() { stick.on = false; stick.vx = 0; stick.vy = 0; },
+  target(cx, cy, n) { const r = DROP_R * dropSize; for (let k = 0; k < n; k++) { if (k % 2 === 0) { stamp(cx, cy, r * 0.55, hexRGB(INKS[0][1])); deposit(cx, cy, r, 0.9, 0); } else deposit(cx, cy, r, 0, 0.9); this.run(0.35); } },
+  fresh() { gpuClear(); },
+  set(o) { if (o.tension != null) tension = o.tension; if (o.depth != null) depth = o.depth; if (o.visc != null) visc = o.visc; if (o.tip != null) tipMult = o.tip; if (o.size != null) dropSize = o.size; },
+};
 
 /* ---------- opening state: a target in the middle, already spreading ---------- */
 gpuClear();
