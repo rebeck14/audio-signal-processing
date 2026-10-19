@@ -1,0 +1,16 @@
+import { createRequire } from 'module'; const { chromium } = createRequire(import.meta.url)(process.env.NODE_PATH + '/playwright');
+const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+const page = await browser.newPage({ viewport: { width: 1000, height: 820 }, deviceScaleFactor: 1 });
+const errs = []; page.on('pageerror', e => errs.push(e.message)); page.on('console', m => { if (m.type() === 'error') errs.push(m.text()); });
+await page.goto('file://' + process.cwd() + '/../index.html');
+await page.waitForTimeout(800); await page.evaluate(() => __ink.pause());
+const shot = async (name, clipFn) => { const b = await page.locator('#bath').boundingBox(); const c = clipFn ? clipFn(b) : b; await page.screenshot({ path: name, clip: c, timeout: 300000 }); console.log('shot', name); };
+await page.evaluate(() => { __ink.target(0.5, 0.5, 11); __ink.run(1.0); });
+await shot('u1_target.png');
+await page.evaluate(() => { __ink.fresh(); __ink.set({ size: 2.2 }); __ink.drop(0.4, 0.45, 4); __ink.run(0.8); __ink.drop(0.55, 0.5, 3); __ink.run(0.8); __ink.set({ size: 1 });
+  __ink.stickOn(0.2, 0.3, 1); __ink.stickMove(0.5, 0.55, 0.5); __ink.stickMove(0.75, 0.35, 0.5); __ink.stickMove(0.45, 0.7, 0.6); __ink.stickOff(); __ink.run(0.6);
+  __ink.stickOn(0.7, 0.75, 1); __ink.stickMove(0.3, 0.5, 0.6); __ink.stickOff(); __ink.run(1.0); });
+await shot('u2_two_inks_stirred.png');
+await shot('u3_zoom.png', b => ({ x: b.x + b.width * 0.3, y: b.y + b.height * 0.3, width: b.width * 0.3, height: b.height * 0.3 }));
+console.log(JSON.stringify({ errs: errs.slice(0, 5) }));
+await browser.close();
