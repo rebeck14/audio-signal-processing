@@ -377,10 +377,18 @@ void main(){
     frag = vec4(texelFetch(tB, X, 0).r + v, 0., 0., 1.);
   }
   else if (uPass == 25) { frag = vec4(0.); }   // ZERO
-  else if (uPass == 21) {           // CURL of tA
-    float h = 1.0/uSize;
-    float c = (fetch(tA,X+ivec2(1,0),uSize).g - fetch(tA,X-ivec2(1,0),uSize).g - fetch(tA,X+ivec2(0,1),uSize).r + fetch(tA,X-ivec2(0,1),uSize).r) * 0.5 / h;
-    frag = vec4(c, 0., 0., 1.);
+  else if (uPass == 21) {           // CURL of tA, averaged over 3x3 so confinement feeds eddies, not texel noise
+    float h = 1.0/uSize; float c = 0.0;
+    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+      ivec2 Y = X + ivec2(i, j);
+      c += (fetch(tA,Y+ivec2(1,0),uSize).g - fetch(tA,Y-ivec2(1,0),uSize).g - fetch(tA,Y+ivec2(0,1),uSize).r + fetch(tA,Y-ivec2(0,1),uSize).r) * 0.5 / h;
+    }
+    frag = vec4(c / 9.0, 0., 0., 1.);
+  }
+  else if (uPass == 26) {           // ACTIVITY: each texel = peak surface speed in its block of tA
+    int b = int(uSizeA) / int(uSize); float m = 0.0;
+    for (int j = 0; j < 32; j++) { if (j >= b) break; for (int i = 0; i < 32; i++) { if (i >= b) break; m = max(m, length(texelFetch(tA, X*b + ivec2(i, j), 0).rg)); } }
+    frag = vec4(m, 0., 0., 1.);
   }
   else if (uPass == 10) {           // DIVERGENCE: tA sol vel
     float h = 1.0/uSize;
@@ -480,6 +488,14 @@ function target(size, float) {
 const pair = (size, float) => [target(size, float), target(size, float)];
 const sol = pair(SIM, true), pot = pair(SIM, true), surf = pair(SIM, true), press = pair(SIM, true);
 const tot = target(SIM, true), div = target(SIM, true), phiH = target(SIM, true), phi = target(SIM, true), curl = target(SIM, true);
+const act = target(32, true), actBuf = new Float32Array(32 * 32 * 4);
+const STILL = 5e-4;   // bath widths per second: below this nothing visible moves, and the bath is declared still
+function checkStill() {
+  draw(act, 26, tot);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, act.fbo); gl.readPixels(0, 0, 32, 32, gl.RGBA, gl.FLOAT, actBuf);
+  let m = 0; for (let i = 0; i < actBuf.length; i += 4) m = Math.max(m, actBuf[i]);
+  if (m < STILL && !stick.on) { settled = true; draw(sol[0], 99); draw(sol[1], 99); draw(tot, 99); }
+}
 // pressure multigrid: a V-cycle from SIM down to 16 texels. Smoothing at every scale is what lets a stick's push reach across the bath.
 const MG = [{ p: press, rhs: div, size: SIM }];
 for (let sz = SIM / 2; sz >= 16; sz /= 2) MG.push({ p: pair(sz, true), rhs: target(sz, true), size: sz });
@@ -626,7 +642,8 @@ function placeShape(x, y) {
   gl.uniform1i(U.uUseFile, useFile ? 1 : 0); gl.uniform1f(U.uAngle, rakeAngle); gl.uniform1f(U.uShapeSize, shapeSize()); gl.uniform1f(U.uShapePx, SHP);
   gl.uniform3f(U.uInkColor, ...hexRGB(INKS[inkIdx][1])); gl.uniform2f(U.uCenter, x, y);
   draw(ink[1], 19, ink[0], null, null, useFile ? shape.colourTex : shape.silhouetteTex); swap(ink);
-  gl.uniform1f(U.uMass, 0.9);
+  // a drop carries 0.9 over a spot 0.038 wide; a shape spans much more, so it gets less per texel, or it would spread until it filled the bath
+  gl.uniform1f(U.uMass, 0.9 * Math.min(0.5, Math.max(0.08, 0.1 / shapeScale)));
   draw(surf[1], 20, surf[0], null, null, shape.colourTex); swap(surf);
   settled = false;
 }
@@ -653,6 +670,7 @@ function step(dt) {
   draw(sol[1], 13, sol[0]); swap(sol);
   // 3. total surface velocity carries the film and the ink
   draw(tot, 14, sol[0], pot[0]);
+  if (stepCount % 30 === 29) checkStill();
   gl.uniform1f(U.uDiff, 0.08);
   draw(surf[1], 7, surf[0], phi, tot); swap(surf);
   draw(map[1], 1, map[0], null, tot); swap(map);
@@ -1078,6 +1096,22 @@ window.__ink = {
   stickOff() { stick.on = false; stick.vx = 0; stick.vy = 0; },
   target(cx, cy, n) { const r = DROP_R * dropSize; for (let k = 0; k < n; k++) { if (k % 2 === 0) { stamp(cx, cy, r * 0.5, hexRGB(INKS[0][1])); deposit(cx, cy, r, 0.9, 0); } else { stamp(cx, cy, r * 0.5, hexRGB(water()), true); deposit(cx, cy, r, 0, 0.9); } this.run(0.26); } },
   fresh() { gpuClear(); },
+  field(which) {   // the stirred flow (sol), the surface flow (tot) or pressure as a PNG data URL, for tests: red = x, green = y, mid-grey = 0
+    const t = which === 'tot' ? tot : which === 'press' ? press[0] : sol[0], n = SIM * SIM, buf = new Float32Array(n * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo); gl.readPixels(0, 0, SIM, SIM, gl.RGBA, gl.FLOAT, buf);
+    let m = 1e-9; for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(buf[4*i]), Math.abs(buf[4*i+1]));
+    const c = document.createElement('canvas'); c.width = c.height = SIM; const cx = c.getContext('2d'), im = cx.createImageData(SIM, SIM);
+    for (let i = 0; i < n; i++) { im.data[4*i] = 128 + 127 * buf[4*i] / m; im.data[4*i+1] = 128 + 127 * buf[4*i+1] / m; im.data[4*i+2] = 128; im.data[4*i+3] = 255; }
+    cx.putImageData(im, 0, 0); return { max: m, png: c.toDataURL() };
+  },
+  maxVel() {   // peak speed of the stirred flow and of the surface, for tests
+    const n = SIM * SIM, buf = new Float32Array(n * 4); let a = 0, b = 0;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, sol[0].fbo); gl.readPixels(0, 0, SIM, SIM, gl.RGBA, gl.FLOAT, buf);
+    for (let i = 0; i < n; i++) a = Math.max(a, Math.hypot(buf[4*i], buf[4*i+1]));
+    gl.bindFramebuffer(gl.FRAMEBUFFER, tot.fbo); gl.readPixels(0, 0, SIM, SIM, gl.RGBA, gl.FLOAT, buf);
+    for (let i = 0; i < n; i++) b = Math.max(b, Math.hypot(buf[4*i], buf[4*i+1]));
+    return { sol: a, tot: b, settled };
+  },
   shapeFromSvg(svgText, name) { return new Promise(res => { const img = new Image(); img.onload = () => { loadShapeImage(img, name || 'test.svg'); res(true); }; img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText); }); },
   place(x, y, angle, useFile) { rakeAngle = angle || 0; $('fileColours').checked = useFile !== false; placeShape(x, y); settled = false; },
   set(o) { if (o.tension != null) tension = o.tension; if (o.depth != null) depth = o.depth; if (o.visc != null) visc = o.visc; if (o.tip != null) tipMult = o.tip; if (o.size != null) dropSize = o.size; if (o.shape != null) shapeScale = o.shape; if (o.tines != null) rakeTines = o.tines; if (o.gap != null) rakeGapV = o.gap; },
