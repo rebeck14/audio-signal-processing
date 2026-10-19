@@ -153,28 +153,48 @@ const INKS = [
 ];
 const $ = id => document.getElementById(id);
 const bath = $('bath'), view = $('view'), ringc = $('ringc');
-const ctx = view.getContext('2d');
+const ctx = view.getContext('2d', { alpha: false });
 const rctx = ringc.getContext('2d');
 
 /* ---------- state ---------- */
 // A drop is a closed polygon in bath units [0,1]^2, plus its ink index. Later drops sit on top.
-let drops = [];          // [{ink, pts: Float64Array(2n)}]
+// Each one carries its bounding box (so a stroke only visits nearby drops) and a cached Path2D
+// in unit space (so untouched drops cost nothing to rebuild).
+let drops = [];          // [{ink, pts: Float64Array(2n), x0, y0, x1, y1, path, touched}]
 let tool = 'stir';
 let inkIdx = 0;
 let dropSize = 1, tipMult = 1, force = 0.6, swirl = 0.7;
 const undoStack = [];
 const DROP_R = 0.042;    // base drop radius (bath units)
 const TIP_R  = 0.028;    // base stick sigma
+const MAX_POINTS = 40000;
+const DROP_MAX = 2500;   // a stirred boundary stretches exponentially, so each drop gets a hard cap
 let dirty = true;
 
 function water() { return getComputedStyle(document.documentElement).getPropertyValue('--water').trim() || '#c8d4dc'; }
 
+function makeDrop(ink, pts) {
+  const d = { ink, pts, x0: 0, y0: 0, x1: 1, y1: 1, path: null, touched: true };
+  bbox(d); return d;
+}
+function bbox(d) {
+  const p = d.pts; let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let i = 0; i < p.length; i += 2) {
+    const x = p[i], y = p[i + 1];
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  d.x0 = x0; d.y0 = y0; d.x1 = x1; d.y1 = y1;
+}
+function touch(d) { d.touched = true; d.path = null; }
+
 /* ---------- the marbling math ---------- */
 // Jaffer, "Mathematical Marbling" (2011): a drop of radius r at C moves every point P on the water to
 // C + (P - C) * sqrt(1 + r^2 / |P - C|^2). Area is conserved and boundaries never cross.
+// The displacement falls off as r^2 / d, so past ~12 r it is under a pixel and can be skipped.
 function addDrop(cx, cy, r, ink) {
-  const r2 = r * r;
+  const r2 = r * r, reach = r * 14;
   for (const d of drops) {
+    if (d.x1 < cx - reach || d.x0 > cx + reach || d.y1 < cy - reach || d.y0 > cy + reach) continue;
     const p = d.pts;
     for (let i = 0; i < p.length; i += 2) {
       const dx = p[i] - cx, dy = p[i + 1] - cy;
@@ -183,14 +203,15 @@ function addDrop(cx, cy, r, ink) {
       const s = Math.sqrt(1 + r2 / d2);
       p[i] = cx + dx * s; p[i + 1] = cy + dy * s;
     }
+    touch(d); bbox(d);
   }
-  const n = 96, pts = new Float64Array(n * 2);
+  const n = 72, pts = new Float64Array(n * 2);
   for (let k = 0; k < n; k++) {
     const a = (k / n) * Math.PI * 2;
     pts[2 * k] = cx + r * Math.cos(a); pts[2 * k + 1] = cy + r * Math.sin(a);
   }
-  drops.push({ ink, pts });
-  if (drops.length > 400) drops.shift();
+  drops.push(makeDrop(ink, pts));
+  if (drops.length > 300) drops.shift();
   dirty = true;
 }
 
@@ -201,12 +222,16 @@ function stir(ax, ay, bx, by, sigma, z, sw) {
   const L = Math.hypot(mx, my);
   if (L < 1e-6) return;
   mx /= L; my /= L;
-  const cutoff = (3.2 * sigma) ** 2, inv = 1 / (2 * sigma * sigma);
-  const theta0 = sw * Math.min(L / sigma, 1.0) * 0.9;
+  const reach = 2.6 * sigma, cutoff = reach * reach, inv = 1 / (2 * sigma * sigma);
+  const theta0 = sw * Math.min(L / sigma, 1.0) * 0.55;
+  const sx0 = Math.min(ax, bx) - reach, sx1 = Math.max(ax, bx) + reach;
+  const sy0 = Math.min(ay, by) - reach, sy1 = Math.max(ay, by) + reach;
   for (const d of drops) {
-    const p = d.pts;
+    if (d.x1 < sx0 || d.x0 > sx1 || d.y1 < sy0 || d.y0 > sy1) continue;
+    const p = d.pts; let hit = false;
     for (let i = 0; i < p.length; i += 2) {
       const px = p[i], py = p[i + 1];
+      if (px < sx0 || px > sx1 || py < sy0 || py > sy1) continue;
       let t = ((px - ax) * mx + (py - ay) * my) / L;
       t = t < 0 ? 0 : t > 1 ? 1 : t;
       const cx = ax + t * L * mx, cy = ay + t * L * my;
@@ -214,7 +239,6 @@ function stir(ax, ay, bx, by, sigma, z, sw) {
       const r2 = rx * rx + ry * ry;
       if (r2 > cutoff) continue;
       const w = Math.exp(-r2 * inv);
-      // wake: rotate about the stick, sense set by which side of the path the point is on
       const side = mx * ry - my * rx;
       const th = theta0 * w * (side >= 0 ? 1 : -1);
       if (th !== 0) {
@@ -222,79 +246,113 @@ function stir(ax, ay, bx, by, sigma, z, sw) {
         const nx = rx * c - ry * s, ny = rx * s + ry * c;
         rx = nx; ry = ny;
       }
-      // drag: carry the core along with the stick
       const push = L * z * w;
       p[i] = cx + rx + mx * push; p[i + 1] = cy + ry + my * push;
+      hit = true;
     }
+    if (hit) { touch(d); d.x0 = Math.min(d.x0, sx0); d.y0 = Math.min(d.y0, sy0); d.x1 = Math.max(d.x1, sx1); d.y1 = Math.max(d.y1, sy1); }
   }
   dirty = true;
 }
 
 // Rake: Jaffer's tine line. A comb of parallel tines, spaced `gap` apart, sweeps along m.
 // Displacement falls off as u^dist with u = 2^(-1/sharp), so each tine pulls a narrow tongue of ink.
+// The comb spans the whole bath, so every drop is visited; it is one pass per move, not per sub-step.
 function rake(ax, ay, bx, by, gap, z, sharp) {
   let mx = bx - ax, my = by - ay;
   const L = Math.hypot(mx, my);
   if (L < 1e-6) return;
   mx /= L; my /= L;
-  const nx = -my, ny = mx;                  // tine normal
-  const u = Math.pow(2, -1 / sharp);        // per-unit falloff (bath units * 100)
+  const nx = -my, ny = mx;
+  const u = Math.pow(2, -1 / sharp);
   const amp = L * z;
   for (const d of drops) {
     const p = d.pts;
     for (let i = 0; i < p.length; i += 2) {
-      const off = (p[i] - bx) * nx + (p[i + 1] - by) * ny;      // signed distance from the stick's tine
-      let dist = Math.abs(((off % gap) + gap) % gap);            // distance to the nearest tine in the comb
+      const off = (p[i] - bx) * nx + (p[i + 1] - by) * ny;
+      let dist = Math.abs(((off % gap) + gap) % gap);
       dist = Math.min(dist, gap - dist);
       const k = Math.pow(u, dist * 100);
       p[i] += mx * amp * k; p[i + 1] += my * amp * k;
     }
+    touch(d);
   }
   dirty = true;
 }
 
-// Stretched edges need new points; bunched edges can lose some. Keep the total bounded.
+// Stretched edges need new points; bunched edges can lose some. Only touched drops are rebuilt,
+// and the total is capped so a long stir stays smooth.
 function resample() {
   let total = 0;
-  for (const d of drops) total += d.pts.length / 2;
-  const maxSeg = total > 90000 ? 0.012 : total > 50000 ? 0.008 : 0.005;
-  const minSeg = 0.0007;
+  for (const d of drops) total += d.pts.length >> 1;
+  const over = total > MAX_POINTS;
+  const maxSeg = over ? 0.016 : total > MAX_POINTS * 0.6 ? 0.011 : 0.007;
+  // over budget: thin every drop, not just the touched ones, until the bath is light again
+  const minSeg = over ? maxSeg * 0.45 : 0.0012;
+  if (total > MAX_POINTS * 1.5) for (const d of drops) d.touched = true;
   for (const d of drops) {
-    const p = d.pts, n = p.length / 2, out = [];
+    if (!d.touched) continue;
+    d.touched = false;
+    const p = d.pts, n = p.length >> 1;
+    // first pass: count, so the output buffer is allocated once
+    let need = 0;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const len = Math.hypot(p[2 * j] - p[2 * i], p[2 * j + 1] - p[2 * i + 1]);
+      if (len < minSeg && n > 24) continue;
+      need += 1 + (len > maxSeg ? Math.min(12, Math.ceil(len / maxSeg)) - 1 : 0);
+    }
+    if (need < 3) { d.pts = p; bbox(d); continue; }
+    const out = new Float64Array(need * 2); let o = 0;
     for (let i = 0; i < n; i++) {
       const x0 = p[2 * i], y0 = p[2 * i + 1];
       const j = (i + 1) % n, x1 = p[2 * j], y1 = p[2 * j + 1];
       const len = Math.hypot(x1 - x0, y1 - y0);
-      if (len < minSeg && n > 24 && out.length > 0) continue;
-      out.push(clampC(x0), clampC(y0));
+      if (len < minSeg && n > 24) continue;
+      out[o++] = clampC(x0); out[o++] = clampC(y0);
       if (len > maxSeg) {
-        const k = Math.min(16, Math.ceil(len / maxSeg));
+        const k = Math.min(12, Math.ceil(len / maxSeg));
         for (let s = 1; s < k; s++) {
           const t = s / k;
-          out.push(clampC(x0 + (x1 - x0) * t), clampC(y0 + (y1 - y0) * t));
+          out[o++] = clampC(x0 + (x1 - x0) * t); out[o++] = clampC(y0 + (y1 - y0) * t);
         }
       }
     }
-    d.pts = Float64Array.from(out);
+    let q = o === out.length ? out : out.subarray(0, o);
+    // hard cap: keep every k-th point; a tangle loses detail gracefully instead of freezing the page
+    const m = q.length >> 1;
+    if (m > DROP_MAX) {
+      const k = Math.ceil(m / DROP_MAX), keep = Math.floor(m / k), r = new Float64Array(keep * 2);
+      for (let i = 0; i < keep; i++) { r[2 * i] = q[2 * i * k]; r[2 * i + 1] = q[2 * i * k + 1]; }
+      q = r;
+    }
+    d.pts = q;
+    bbox(d);
   }
 }
 function clampC(v) { return v < -0.6 ? -0.6 : v > 1.6 ? 1.6 : v; }
 
 /* ---------- drawing ---------- */
+function pathOf(d) {
+  if (d.path) return d.path;
+  const p = d.pts, path = new Path2D();
+  path.moveTo(p[0], p[1]);
+  for (let i = 2; i < p.length; i += 2) path.lineTo(p[i], p[i + 1]);
+  path.closePath();
+  d.path = path; return path;
+}
 function paint(c, S, pad) {
+  c.setTransform(1, 0, 0, 1, 0, 0);
   c.fillStyle = water();
   c.fillRect(0, 0, S, S);
+  c.setTransform(S, 0, 0, S, 0, 0);     // paths live in unit space
   for (const d of drops) {
-    const p = d.pts; if (p.length < 6) continue;
-    c.beginPath();
-    c.moveTo(p[0] * S, p[1] * S);
-    for (let i = 2; i < p.length; i += 2) c.lineTo(p[i] * S, p[i + 1] * S);
-    c.closePath();
+    if (d.pts.length < 6) continue;
     c.fillStyle = INKS[d.ink][1];
-    c.fill();
+    c.fill(pathOf(d));
   }
+  c.setTransform(1, 0, 0, 1, 0, 0);
   if (pad) {
-    // a soft meniscus toward the walls, like water in a wooden tray
     const g = c.createRadialGradient(S * 0.5, S * 0.42, S * 0.35, S * 0.5, S * 0.5, S * 0.78);
     g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(10,8,6,0.22)');
     c.fillStyle = g; c.fillRect(0, 0, S, S);
@@ -303,19 +361,15 @@ function paint(c, S, pad) {
 function render() {
   if (!dirty) return;
   dirty = false;
-  const S = view.width;
-  paint(ctx, S, true);
+  paint(ctx, view.width, true);
 }
-let last = 0;
-function frame(now) {
-  render();
-  requestAnimationFrame(frame);
-}
+function frame() { render(); requestAnimationFrame(frame); }
 requestAnimationFrame(frame);
 
 function layout() {
   const r = bath.getBoundingClientRect();
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  // 1.5x is plenty for ink edges and halves the fill cost of a retina bath
+  const dpr = Math.min(1.5, window.devicePixelRatio || 1);
   const px = Math.max(64, Math.round(r.width * dpr));
   if (view.width !== px) { view.width = view.height = px; ringc.width = ringc.height = px; dirty = true; }
 }
@@ -332,7 +386,6 @@ function drawRing() {
   rctx.strokeStyle = 'rgba(28,25,21,0.55)'; rctx.lineWidth = Math.max(1, S / 600);
   rctx.beginPath(); rctx.arc(hover.x * S, hover.y * S, r, 0, Math.PI * 2); rctx.stroke();
   if (tool === 'rake') {
-    // show the comb spacing
     const g = rakeGap() * S;
     rctx.setLineDash([4, 6]);
     for (let k = -3; k <= 3; k++) {
@@ -349,11 +402,11 @@ function toBath(e) {
   const r = bath.getBoundingClientRect();
   return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
 }
-let down = false, lastP = null, lastDropP = null, holdTimer = null, strokeLen = 0;
+let down = false, lastP = null, lastDropP = null, holdTimer = null, lastResample = 0;
 
 function snapshot() {
-  undoStack.push(drops.map(d => ({ ink: d.ink, pts: d.pts.slice() })));
-  if (undoStack.length > 40) undoStack.shift();
+  undoStack.push(drops.map(d => makeDrop(d.ink, d.pts.slice())));
+  if (undoStack.length > 30) undoStack.shift();
   $('undo').disabled = false;
 }
 
@@ -361,12 +414,11 @@ bath.addEventListener('pointerdown', e => {
   if (e.button !== 0 && e.pointerType === 'mouse') return;
   bath.setPointerCapture(e.pointerId);
   const p = toBath(e);
-  down = true; lastP = p; hover = p; strokeLen = 0;
+  down = true; lastP = p; hover = p;
   snapshot();
   if (tool === 'drop') {
     addDrop(p.x, p.y, DROP_R * dropSize, inkIdx);
     lastDropP = p;
-    // hold to pour: the drop keeps growing while the stick stays put
     clearInterval(holdTimer);
     holdTimer = setInterval(() => {
       if (!down || !lastP) return;
@@ -380,6 +432,8 @@ bath.addEventListener('pointerdown', e => {
 
 bath.addEventListener('pointermove', e => {
   const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+  // Budget per frame: a fast flick is folded into a few generous steps instead of hundreds of tiny ones.
+  let budget = 10;
   for (const ev of events) {
     const p = toBath(ev);
     hover = p;
@@ -394,26 +448,33 @@ bath.addEventListener('pointermove', e => {
       }
     } else if (tool === 'stir') {
       const sigma = TIP_R * tipMult;
-      // split fast moves into steps no longer than the tip, so the wake stays smooth
       const seg = Math.hypot(p.x - lastP.x, p.y - lastP.y);
-      const steps = Math.max(1, Math.ceil(seg / (sigma * 0.5)));
+      if (seg < sigma * 0.08) continue;              // jitter, not a move
+      let steps = Math.ceil(seg / (sigma * 0.9));
+      if (steps > budget) steps = Math.max(1, budget);
+      budget -= steps;
       for (let s = 1; s <= steps; s++) {
         const t0 = (s - 1) / steps, t1 = s / steps;
         stir(lastP.x + (p.x - lastP.x) * t0, lastP.y + (p.y - lastP.y) * t0,
              lastP.x + (p.x - lastP.x) * t1, lastP.y + (p.y - lastP.y) * t1,
              sigma, 0.25 + force * 1.1 * pressure, swirl);
       }
-      strokeLen += seg;
     } else {
-      rake(lastP.x, lastP.y, p.x, p.y, rakeGap(), 0.6 + force * 1.6, 0.35 + swirl * 1.4);
+      // the comb spans the whole bath, so one pass per frame: fold the coalesced moves into it
+      if (ev !== events[events.length - 1]) continue;
+      rake(lastP.x, lastP.y, p.x, p.y, rakeGap(), 0.35 + force * 0.65, 0.25 + swirl * 0.55);
     }
     lastP = p;
+    if (budget <= 0) break;
   }
-  if (down) resample();
+  if (down) {
+    const now = performance.now();
+    if (now - lastResample > 60) { resample(); lastResample = now; }
+  }
   drawRing();
 });
 
-function endPointer(e) {
+function endPointer() {
   if (!down) return;
   down = false; lastP = null; lastDropP = null;
   clearInterval(holdTimer); holdTimer = null;
@@ -423,6 +484,8 @@ function endPointer(e) {
 bath.addEventListener('pointerup', endPointer);
 bath.addEventListener('pointercancel', endPointer);
 bath.addEventListener('pointerleave', () => { if (!down) { hover = null; drawRing(); } });
+window.addEventListener('blur', endPointer);
+document.addEventListener('visibilitychange', () => { if (document.hidden) endPointer(); });
 
 /* ---------- controls ---------- */
 function setTool(t) {
@@ -486,7 +549,6 @@ async function handOver(filename, data) {
       if (err && err.code === 'rate_limited') { status('One save at a time.'); return; }
     }
   }
-  // plain browser (the file on disk): an ordinary download
   try {
     const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data]));
     const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
@@ -494,7 +556,7 @@ async function handOver(filename, data) {
     status('Saved ' + filename);
   } catch (_) { status('Saving is not available in this view.'); }
 }
-function stamp() { const d = new Date(); return d.toISOString().slice(0, 19).replace(/[:T]/g, '-'); }
+function stamp() { return new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'); }
 
 async function pullPNG() {
   const S = 2048, c = document.createElement('canvas'); c.width = c.height = S;
@@ -545,7 +607,7 @@ window.addEventListener('keydown', e => {
   const path = [[0.22, 0.30], [0.40, 0.36], [0.56, 0.52], [0.48, 0.70], [0.70, 0.76]];
   for (let i = 0; i < path.length - 1; i++) {
     const [x0, y0] = path[i], [x1, y1] = path[i + 1];
-    const steps = 18;
+    const steps = 14;
     for (let s = 1; s <= steps; s++) {
       const t0 = (s - 1) / steps, t1 = s / steps;
       stir(x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0, x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1, TIP_R, 0.9, 0.7);
