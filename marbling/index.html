@@ -214,12 +214,9 @@ float jacobianAt(sampler2D mapTex, vec2 uv, float M){
 }
 float darkness(float density){ return 1.0 - exp(-4.5 * density); }
 vec2 velAt(vec2 uv){ return bil(tC, uv, uSizeC).rg; }   // tC = total velocity (SIM)
-// Effective tension drop of the film: sumi plus the stronger clear dispersant, box-blurred 3x3.
-float gef(sampler2D t, ivec2 i, float S){
-  float a = 0.0;
-  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) a += dot(fetch(t, i + ivec2(x, y), S).rg, vec2(1.0, uKappa2));
-  return a / 9.0;
-}
+// Effective tension drop of the film, already Gaussian-smoothed over a few texels (passes 16 and 17).
+// The smoothing stands in for the viscous boundary layer that carries Marangoni stress into the water.
+float gef(sampler2D t, ivec2 i, float S){ return fetch(t, i, S).r; }
 // Surface velocity of the overdamped Marangoni flow: mobility times the tension gradient (2h central stencil on the blurred field)
 vec2 potTarget(sampler2D t, ivec2 i, float S){
   float h = 1.0 / S;
@@ -276,10 +273,10 @@ void main(){
     vec2 s = bil(tA, uv - u*uDt, uSize).rg;
     // div of the spreading flow = -mobility * Laplacian(tension): 5-point stencil, so no odd-even mode can grow.
     // The stirred part is divergence-free after projection and is left out.
-    float gC = gef(tA, X, uSize);
-    float lap = (gef(tA, X+ivec2(1,0), uSize) + gef(tA, X-ivec2(1,0), uSize) + gef(tA, X+ivec2(0,1), uSize) + gef(tA, X-ivec2(0,1), uSize) - 4.0*gC) / (h*h);
+    float gC = gef(tB, X, uSize);
+    float lap = (gef(tB, X+ivec2(1,0), uSize) + gef(tB, X-ivec2(1,0), uSize) + gef(tB, X+ivec2(0,1), uSize) + gef(tB, X-ivec2(0,1), uSize) - 4.0*gC) / (h*h);
     float div = -uKappa * lap;
-    s *= exp(clamp(-div*uDt, -0.5, 0.5));             // surface density: stretched surface thins the film
+    s *= exp(clamp(-div*uDt, -0.35, 0.35));           // surface density: stretched surface thins the film
     vec2 avg = 0.25*(fetch(tA,X+ivec2(1,0),uSize).rg + fetch(tA,X-ivec2(1,0),uSize).rg + fetch(tA,X+ivec2(0,1),uSize).rg + fetch(tA,X-ivec2(0,1),uSize).rg);
     s = mix(s, avg, uDiff);
     s *= exp(-0.02*uDt);
@@ -348,6 +345,16 @@ void main(){
     }
     frag = vec4(acc/16.0, 0., 0., 1.);
   }
+  else if (uPass == 16 || uPass == 17) {   // SMOOTH TENSION: 13-tap Gaussian, horizontal then vertical. tA = surf (16) or the horizontal result (17)
+    float w[7]; w[0]=0.1330; w[1]=0.1260; w[2]=0.1071; w[3]=0.0817; w[4]=0.0559; w[5]=0.0344; w[6]=0.0190;
+    float acc = 0.0, norm = 0.0;
+    for (int k = -6; k <= 6; k++) {
+      ivec2 off = (uPass == 16) ? ivec2(k, 0) : ivec2(0, k);
+      float v = (uPass == 16) ? dot(fetch(tA, X + off, uSize).rg, vec2(1.0, uKappa2)) : fetch(tA, X + off, uSize).r;
+      float wk = w[k < 0 ? -k : k]; acc += v * wk; norm += wk;
+    }
+    frag = vec4(acc / norm, 0., 0., 1.);
+  }
   else { frag = vec4(0.0); }
 }`;
 
@@ -372,7 +379,7 @@ function target(size, float) {
 }
 const pair = (size, float) => [target(size, float), target(size, float)];
 const sol = pair(SIM, true), pot = pair(SIM, true), surf = pair(SIM, true), press = pair(SIM, true);
-const tot = target(SIM, true), div = target(SIM, true);
+const tot = target(SIM, true), div = target(SIM, true), phiH = target(SIM, true), phi = target(SIM, true);
 const map = pair(MAP, true), ink = pair(INK, true);
 const cov = target(COV, false);
 let exportFbo = null;
@@ -397,7 +404,7 @@ let mapDirty = false, settled = true, stepCount = 0;
 const undoStack = []; const UNDO_MAX = 12;
 
 // physics knobs from the sliders
-function kappa() { return (0.003 + 0.010 * tension) * (0.4 + 1.4 * depth); }   // surface mobility: tension drive over floor drag
+function kappa() { return (0.0008 + 0.0028 * tension) * (0.4 + 1.4 * depth); }  // surface mobility: tension drive over floor drag (~0.2 bath/s for a fresh drop)
 function beta() { return 6.0 + (1 - depth) * 18.0; }                               // how fast the surface settles to that balance
 function betaSol() { return 0.15 + Math.pow(1 - depth, 2) * 3.0; }
 function viscMix() { return 0.02 + visc * 0.25; }
@@ -430,7 +437,8 @@ function step(dt) {
   gl.uniform1f(U.uDt, dt);
   // 1. the spreading flow: Marangoni pull, floor drag
   gl.uniform1f(U.uKappa, kappa()); gl.uniform1f(U.uKappa2, 1.7); gl.uniform1f(U.uBeta, beta());
-  draw(pot[1], 8, pot[0], surf[0]); swap(pot);
+  draw(phiH, 16, surf[0]); draw(phi, 17, phiH);
+  draw(pot[1], 8, pot[0], phi); swap(pot);
   // 2. the stirred flow: viscosity, drag, stick, then make it divergence-free
   gl.uniform1f(U.uBetaSol, betaSol()); gl.uniform1f(U.uVisc, viscMix());
   gl.uniform1f(U.uTines, stick.on ? stick.tines : 0); gl.uniform2f(U.uCenter, stick.x, stick.y);
@@ -444,7 +452,7 @@ function step(dt) {
   // 3. total surface velocity carries the film and the ink
   draw(tot, 14, sol[0], pot[0]);
   gl.uniform1f(U.uDiff, 0.08);
-  draw(surf[1], 7, surf[0], null, tot); swap(surf);
+  draw(surf[1], 7, surf[0], phi, tot); swap(surf);
   draw(map[1], 1, map[0], null, tot); swap(map);
   mapDirty = true; stepCount++;
   if (stepCount % 900 === 0) bake();   // keep the map from drifting too far from the ink it samples
