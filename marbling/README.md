@@ -2,12 +2,15 @@
 
 A suminagashi bath in one HTML file, simulated as a surface flow on the GPU. Double-click `index.html` in Safari or Chrome on a Mac. WebGL2 with float textures is required.
 
-Tap to drop sumi. Hold to pour. Switch to Clear and tap on the same spot to push the ring outward. Drag with the stick to stir, or with the rake to comb. Return pours fresh water.
+Tap to drop sumi. Hold to pour. Switch to Clear and tap on the same spot to push the ring outward. Drag with the stick to stir, or with the rake to comb. Return pours fresh water. The bath opens blank.
 
-| Key | Does |
+| Key or gesture | Does |
 |---|---|
-| 1 to 5, arrows | pick an ink: Sumi, Washi, Cinnabar, Bubble, Windfish |
+| 1 to 5, ↑ ↓ | pick an ink. Click the selected chip again to change its colour. The square chip is the water. |
 | D, C, S, R | Ink, Clear, Stir, Rake |
+| ⌘ and move | drop size with Ink or Clear, tip size with Stir or Rake. Right is bigger. |
+| ⌥ and move, or ← → | turn the rake. Right is clockwise. |
+| Tines, Tine gap | sliders for the rake |
 | T | a sumi target: sumi, clear, sumi, on one spot |
 | Z | undo (the ink and the film; the flow restarts from rest) |
 | Return | fresh water |
@@ -20,7 +23,7 @@ Sumi ink is a surfactant. Where it lands, surface tension drops, and the surface
 - **Film.** Two surfactant species on a 512 grid: sumi and the clear dispersant. Both are carried by the surface flow as a conserved surface density, so a stretched surface thins the film and a squeezed one thickens it.
 - **Spreading flow.** The bath is treated as overdamped: floor drag balances the Marangoni pull within a frame, so the surface velocity is the tension gradient times a mobility. Surface tension and bath depth set that mobility. This flow is compressible, as a real surface fed from below is.
 - **Stirred flow.** The stick is a moving no-slip disk in a divergence-free flow (Jacobi pressure projection, 40 sweeps). The wake, and the mushrooms it folds rings into, come from the projection, not from a drawn shape. Viscosity and depth damp it.
-- **Ink.** Ink is never painted. A 1024 material map records where each point of the surface came from, and a 2048 ink texture holds colour and coverage in that original frame. On screen the coverage is read through the map with one pixel of anti-aliasing, so edges stay crisp no matter how far the flow has carried them. A clear drop is a drop of water-coloured ink plus dispersant, which is how the alternating rings are made.
+- **Ink.** Ink is never painted. A 1024 material map records where each point of the surface came from, and a 2048 ink texture holds colour and coverage in that original frame. Every eight frames the ink is re-rasterized in its current position and the map reset, so no edge is ever magnified more than a little; the display samples each pixel four times so boundaries between two inks are anti-aliased as well as edges against water. A clear drop lifts ink off the water and adds dispersant, which is how the alternating rings are made.
 - **Readout.** After a drop, the footer fits the growth of its area to R ~ t^n for three seconds and prints n. Deep-water Marangoni spreading gives 0.75, a thin viscous film 0.25.
 
 What is verified: the shaders compile and run, a drop spreads into a pale disk with a dark rim, a clear drop inside it makes a ring, and the stick wake is a projected flow. What is not yet verified: the numbers. Making this the most accurate suminagashi simulator means filming a real bath and fitting the mobility, the drag, and the ring spacing to it.
