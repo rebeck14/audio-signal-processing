@@ -423,7 +423,7 @@ void main(){
     vec2 q = uv - uCenter; float ca = cos(-uAngle), sa = sin(-uAngle);
     vec2 suv = vec2(q.x*ca - q.y*sa, q.x*sa + q.y*ca) / (2.0*uShapeSize) + 0.5;
     if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) { frag = old; return; }
-    vec3 other; vec4 r = inkSample(tD, vec2(suv.x, 1.0 - suv.y), uShapePx, other);
+    vec3 other; vec4 r = inkSample(tD, suv, uShapePx, other);   // the shape texture is stored top row first, like the bath
     vec3 region = r.a >= 0.0 ? r.rgb : other;
     float d = abs(r.a) * (2.0*uShapeSize) / uShapePx;        // shape texels to bath units
     if (region.r < -0.5) {                                     // outside the shape, inside its box: the shape is a new boundary nearby
@@ -439,7 +439,7 @@ void main(){
     vec2 q = uv - uCenter; float ca = cos(-uAngle), sa = sin(-uAngle);
     vec2 suv = vec2(q.x*ca - q.y*sa, q.x*sa + q.y*ca) / (2.0*uShapeSize) + 0.5;
     if (suv.x >= 0.0 && suv.x <= 1.0 && suv.y >= 0.0 && suv.y <= 1.0) {
-      vec3 other; vec4 r = inkSample(tD, vec2(suv.x, 1.0 - suv.y), uShapePx, other);
+      vec3 other; vec4 r = inkSample(tD, suv, uShapePx, other);
       vec3 region = r.a >= 0.0 ? r.rgb : other;
       if (region.r > -0.5) s.r = min(s.r + uMass, 1.6);
     }
